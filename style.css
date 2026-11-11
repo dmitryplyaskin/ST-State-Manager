@@ -1,0 +1,67 @@
+/**
+ * ST-State-Manager — settings panel styles.
+ *
+ * Kept intentionally small: SillyTavern's own classes (inline-drawer,
+ * menu_button, text_pole, checkbox_label, flex-container) do most of the work.
+ */
+
+.stsm-settings .stsm-section-title {
+  font-weight: 600;
+  margin: 12px 0 6px;
+}
+
+.stsm-settings .stsm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.stsm-settings .stsm-output {
+  margin: 8px 0;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85em;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+  border-radius: 6px;
+  background: var(--black30a, rgba(0, 0, 0, 0.3));
+}
+
+.stsm-settings .stsm-output:empty {
+  display: none;
+}
+
+.stsm-settings .stsm-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 8px;
+  border-radius: 6px;
+  font-size: 0.9em;
+  background: rgba(255, 193, 7, 0.12);
+  border: 1px solid rgba(255, 193, 7, 0.35);
+}
+
+.stsm-settings [hidden] {
+  display: none !important;
+}
+
+.stsm-settings.stsm-disabled #stsm_body {
+  opacity: 0.55;
+}
+
+.stsm-settings #stsm_model {
+  min-width: 0;
+}
+
+.stsm-settings #stsm_refresh_models {
+  flex: 0 0 auto;
+}
+
+.stsm-settings .stsm-grid .text_pole {
+  width: 100%;
+}

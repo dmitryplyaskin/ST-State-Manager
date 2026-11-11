@@ -1,0 +1,128 @@
+<div id="stsm_settings" class="stsm-settings">
+  <div class="inline-drawer">
+    <div class="inline-drawer-toggle inline-drawer-header">
+      <div class="flex-container alignitemscenter margin0">
+        <b>ST-State-Manager</b>
+      </div>
+      <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+    </div>
+    <div class="inline-drawer-content">
+      <label class="checkbox_label" for="stsm_enabled">
+        <input id="stsm_enabled" type="checkbox" />
+        <span>Enable extension</span>
+      </label>
+      <small class="text_muted">
+        While disabled, the extension does not call any model and does not modify
+        the chat.
+      </small>
+
+      <div id="stsm_body" class="flex-container flexFlowColumn">
+        <hr class="sysHR" />
+
+        <div class="stsm-section-title">Model call</div>
+
+        <div id="stsm_cm_warning" class="stsm-warning" hidden>
+          <i class="fa-solid fa-triangle-exclamation"></i>
+          <span>
+            Connection Manager is disabled, so only the main SillyTavern
+            connection is available.
+          </span>
+        </div>
+
+        <label for="stsm_profile">Connection profile</label>
+        <select id="stsm_profile" class="text_pole"></select>
+        <small id="stsm_profile_hint" class="text_muted"></small>
+
+        <label for="stsm_model">Model override</label>
+        <div class="flex-container">
+          <input
+            id="stsm_model"
+            class="text_pole flex1"
+            type="text"
+            list="stsm_model_list"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Default model"
+          />
+          <datalist id="stsm_model_list"></datalist>
+          <button
+            id="stsm_refresh_models"
+            class="menu_button"
+            type="button"
+            title="Refresh the model list"
+          >
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+        </div>
+        <small id="stsm_model_hint" class="text_muted"></small>
+        <small id="stsm_model_status" class="text_muted"></small>
+        <small id="stsm_backend_hint" class="text_muted"></small>
+
+        <div class="stsm-grid">
+          <label class="flex-container flexFlowColumn" for="stsm_max_tokens">
+            <span>Max tokens</span>
+            <input
+              id="stsm_max_tokens"
+              class="text_pole"
+              type="number"
+              min="16"
+              max="8192"
+              step="16"
+            />
+          </label>
+          <label class="flex-container flexFlowColumn" for="stsm_temperature">
+            <span>Temperature</span>
+            <input
+              id="stsm_temperature"
+              class="text_pole"
+              type="number"
+              min="0"
+              max="2"
+              step="0.05"
+              placeholder="from preset"
+            />
+          </label>
+        </div>
+
+        <label class="checkbox_label" for="stsm_include_preset">
+          <input id="stsm_include_preset" type="checkbox" />
+          <span>Apply the profile's generation preset</span>
+        </label>
+
+        <label class="checkbox_label" for="stsm_stream">
+          <input id="stsm_stream" type="checkbox" />
+          <span>Stream responses</span>
+        </label>
+
+        <hr class="sysHR" />
+
+        <div class="stsm-section-title">Test request</div>
+        <textarea
+          id="stsm_test_prompt"
+          class="text_pole"
+          rows="3"
+          placeholder="e.g. Reply with a single JSON object: {&quot;ok&quot;: true}"
+        ></textarea>
+        <div class="flex-container">
+          <button id="stsm_test_run" class="menu_button" type="button">
+            <i class="fa-solid fa-paper-plane"></i> Send test request
+          </button>
+        </div>
+        <pre id="stsm_test_output" class="stsm-output"></pre>
+
+        <hr class="sysHR" />
+
+        <div class="flex-container spaceBetween alignitemscenter">
+          <div class="stsm-section-title margin0">Current chat state</div>
+          <small id="stsm_state_info" class="text_muted"></small>
+        </div>
+        <pre id="stsm_state_preview" class="stsm-output"></pre>
+        <div class="flex-container">
+          <button id="stsm_state_reset" class="menu_button" type="button">
+            <i class="fa-solid fa-rotate-left"></i> Reset chat state
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,13 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Local tooling only: the extension itself has no build step and no runtime deps
+node_modules/
