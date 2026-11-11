@@ -59,8 +59,11 @@ Copy the folder into the user's extensions directory:
 data/default-user/extensions/ST-State-Manager/
 ```
 
-or install it through **Extensions → Install extension** with the repository URL
-once the repository exists.
+or install it through **Extensions → Install extension** with the repository URL:
+
+```
+https://github.com/dmitryplyaskin/ST-State-Manager
+```
 
 > The folder name **must stay `ST-State-Manager`**: the settings template is
 > loaded as `third-party/ST-State-Manager/settings.html`.
@@ -180,8 +183,11 @@ ST-State-Manager — расширение для SillyTavern, которое в�
 data/default-user/extensions/ST-State-Manager/
 ```
 
-или установите через **Extensions → Install extension** по URL репозитория,
-когда он появится.
+или установите через **Extensions → Install extension** по URL репозитория:
+
+```
+https://github.com/dmitryplyaskin/ST-State-Manager
+```
 
 > Имя папки **должно остаться `ST-State-Manager`**: шаблон настроек грузится как
 > `third-party/ST-State-Manager/settings.html`.
