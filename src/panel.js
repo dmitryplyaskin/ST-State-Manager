@@ -1,12 +1,14 @@
 /** Native chat drawer: scene, history and all working configuration. */
 import { getSettings, isEnabled, subscribeSettings, updateSetting } from "./settings.js";
-import { getState, resetState, rollbackTo, subscribeState } from "./state-store.js";
+import { getState, resetState, rollbackTo, stateText, subscribeState } from "./state-store.js";
+import { getRequestLog, subscribeRequests } from "./request-log.js";
 import { cancelWorker, getTurnCounter, getWorkerStatus, runWorker, subscribeWorker } from "./worker.js";
 import { bindPanelSettings } from "./panel-settings.js";
 import { renderStateView } from "./state-view.js";
 
 let initialized = false;
 let selectedRevision = null;
+let selectedRequest = null;
 let activeTab = "scene";
 let settingsController;
 let movingBound = false;
@@ -42,7 +44,7 @@ export async function showState() {
   if (!isEnabled()) return;
   const pre = document.createElement("pre");
   pre.className = "stsm-code";
-  pre.textContent = JSON.stringify(getState().data, null, 2);
+  pre.textContent = stateText(getState());
   const ctx = SillyTavern.getContext();
   await ctx.callGenericPopup(pre, ctx.POPUP_TYPE.TEXT, "", { wide: true, allowVerticalScrolling: true, okButton: "Закрыть" });
 }
@@ -58,6 +60,7 @@ function selectTab(name, focus = false) {
   }
   element("stsm-panel").querySelector(".stsm-panel-body").scrollTop = 0;
   if (name === "settings") settingsController.activate();
+  if (name === "requests") renderRequests();
 }
 
 function renderStatus() {
@@ -66,14 +69,15 @@ function renderStatus() {
   const worker = getWorkerStatus();
   const hasChat = Boolean(SillyTavern.getContext().getCurrentChatId?.());
   const running = worker.status === "running";
-  let message = !settings.enabled ? "Расширение выключено" : !hasChat ? "Откройте чат" : "Готово к обновлению";
+  let message = !settings.enabled ? "Расширение выключено" : !hasChat ? "Откройте чат" : "";
   if (settings.enabled && hasChat) {
     if (running) message = "Обновляю состояние…";
-    else if (worker.status === "error") message = "Не удалось обновить состояние. Проверьте подключение и лимит ответа в настройках.";
+    else if (worker.status === "error") message = "Ошибка обновления · подробности во вкладке «Запросы»";
     else if (worker.message.startsWith("Cancelled")) message = "Обновление отменено";
     else if (worker.elapsedMs) message = `Обновление завершено${worker.provider ? ` · ${worker.provider}` : ""} · ${(worker.elapsedMs / 1000).toFixed(1)} с`;
   }
   element("stsm_panel_status").textContent = message;
+  element("stsm_panel_status").hidden = !message;
   element("stsm_panel_status").dataset.status = worker.status;
   element("stsm_panel_automation").textContent = settings.autoUpdate
     ? `${settings.trigger === "before" ? "До ответа" : "После ответа"} · счётчик сообщений ${getTurnCounter()}/${settings.frequency}`
@@ -91,7 +95,7 @@ function renderStatus() {
 
 function renderHistory(state = getState()) {
   const history = [...state.history].reverse();
-  element("stsm_history_count").textContent = `Сохранено: ${history.length}. Лимит: ${getSettings().historyLimit}.`;
+  element("stsm_history_count").textContent = `${history.length} из ${getSettings().historyLimit}`;
   element("stsm_history_empty").hidden = history.length > 0;
   const list = element("stsm_history_list");
   list.replaceChildren();
@@ -116,8 +120,7 @@ function renderHistory(state = getState()) {
   if (selected) {
     element("stsm_history_heading").textContent = `Ревизия ${selected.revision}`;
     element("stsm_history_stamp").textContent = `${new Date(selected.updatedAt).toLocaleString()} · ${triggerLabel(selected.trigger)}`;
-    renderStateView(element("stsm_history_preview"), selected.data);
-    element("stsm_history_json").textContent = JSON.stringify(selected.data, null, 2);
+    renderStateView(element("stsm_history_preview"), selected);
   }
 }
 
@@ -128,11 +131,49 @@ function renderScene() {
   element("stsm_panel_revision").textContent = state.revision
     ? `Ревизия ${state.revision} · ${new Date(state.updatedAt).toLocaleString()} · ${triggerLabel(state.trigger || "manual")}` : "";
   element("stsm_scene_empty").hidden = state.revision > 0;
-  element("stsm_scene_json").hidden = !state.revision;
-  renderStateView(element("stsm_panel_state"), state.data);
-  element("stsm_state_json").textContent = JSON.stringify(state.data, null, 2);
+  renderStateView(element("stsm_panel_state"), state);
   element("stsm_view_scene").setAttribute("aria-label", ctx.name2 ? `Состояние сцены: ${ctx.name2}` : "Состояние сцены");
   renderHistory(state); renderStatus();
+}
+
+const requestStatus = { running: "Выполняется", success: "Получен ответ", error: "Ошибка", cancelled: "Отменён", interrupted: "Прерван загрузкой страницы" };
+const requestPurpose = purpose => purpose === "connection-test" ? "Проверка подключения" : triggerLabel(purpose);
+const currentRequest = () => getRequestLog().find(item => item.id === selectedRequest);
+
+function renderRequests() {
+  if (!initialized) return;
+  const entries = getRequestLog();
+  if (!entries.some(item => item.id === selectedRequest)) selectedRequest = entries[0]?.id || null;
+  element("stsm_requests_empty").hidden = entries.length > 0;
+  element("stsm_request_browser").hidden = !entries.length;
+  const select = element("stsm_request_select");
+  select.replaceChildren(...entries.map(entry => new Option(
+    `${new Date(entry.startedAt).toLocaleString()} · ${requestPurpose(entry.request.purpose)} · ${requestStatus[entry.status] || entry.status}`, entry.id)));
+  select.value = selectedRequest || "";
+  const entry = entries.find(item => item.id === selectedRequest);
+  if (!entry) return;
+  element("stsm_request_meta").textContent = [entry.model || entry.payload?.model || entry.request.model,
+    entry.provider, entry.elapsedMs !== undefined ? `${(entry.elapsedMs / 1000).toFixed(1)} с` : "",
+    entry.requestId].filter(Boolean).join(" · ");
+  element("stsm_request_error").hidden = !entry.error;
+  element("stsm_request_error").textContent = entry.error || "";
+  const messages = entry.payload?.messages || entry.request.messages || [];
+  const container = element("stsm_request_messages");
+  container.replaceChildren();
+  for (const message of messages) {
+    const block = document.createElement("div");
+    const label = document.createElement("h5"); label.textContent = message.role;
+    const pre = document.createElement("pre"); pre.className = "stsm-code"; pre.tabIndex = 0;
+    pre.textContent = typeof message.content === "string" ? message.content : JSON.stringify(message.content, null, 2);
+    block.append(label, pre); container.append(block);
+  }
+  element("stsm_request_payload").textContent = JSON.stringify(entry.payload || entry.request, null, 2);
+  element("stsm_request_response").textContent = entry.response ?? (entry.status === "running" ? "Ожидание ответа…" : "Ответ не получен");
+  element("stsm_request_reasoning_block").hidden = !entry.reasoning;
+  element("stsm_request_reasoning").textContent = entry.reasoning || "";
+  element("stsm_request_raw_block").hidden = !entry.rawResponse;
+  element("stsm_request_raw").textContent = entry.rawResponse ? JSON.stringify(entry.rawResponse, null, 2) : "";
+  element("stsm_request_response_copy").disabled = !entry.response;
 }
 
 function renderPin() {
@@ -183,6 +224,7 @@ export function destroyPanel() {
   element("stsm_update_state")?.remove();
   movingBound = false;
   selectedRevision = null;
+  selectedRequest = null;
   activeTab = "scene";
 }
 
@@ -226,8 +268,11 @@ async function initializePanel(version) {
   element("stsm_panel_close").addEventListener("click", () => { void togglePanel().then(() => icon.focus()); });
   element("stsm_pin").addEventListener("click", () => updateSetting("panelPinned", !getSettings().panelPinned));
   panel.addEventListener("keydown", event => {
+    // SillyTavern handles arrows/Enter globally (swipes and generation).
+    // Keys used inside this workspace must never reach the chat shortcuts.
+    event.stopPropagation();
     if (event.key === "Escape" && panel.classList.contains("openDrawer")) {
-      event.stopPropagation(); void togglePanel().then(() => icon.focus());
+      void togglePanel().then(() => icon.focus());
     }
   });
   const tabs = [...panel.querySelectorAll("[data-stsm-tab]")];
@@ -245,8 +290,15 @@ async function initializePanel(version) {
   element("stsm_update_now").addEventListener("click", () => void runManualUpdate());
   element("stsm_cancel").addEventListener("click", () => cancelWorker());
   element("stsm_panel_reset").addEventListener("click", () => void confirmReset().catch(toastError));
-  element("stsm_panel_copy").addEventListener("click", () => void navigator.clipboard.writeText(JSON.stringify(getState().data, null, 2))
-    .then(() => toastr.info("JSON состояния скопирован", "Состояние сцены")).catch(toastError));
+  const copy = value => void navigator.clipboard.writeText(value).then(() => toastr.info("Скопировано", "Состояние сцены")).catch(toastError);
+  element("stsm_panel_copy").addEventListener("click", () => copy(stateText(getState())));
+  element("stsm_request_select").addEventListener("change", event => { selectedRequest = event.target.value; renderRequests(); });
+  element("stsm_request_copy").addEventListener("click", () => copy(JSON.stringify(currentRequest(), null, 2)));
+  element("stsm_request_prompt_copy").addEventListener("click", () => {
+    const entry = currentRequest();
+    copy((entry?.payload?.messages || entry?.request.messages || []).map(message => `[${message.role}]\n${typeof message.content === "string" ? message.content : JSON.stringify(message.content, null, 2)}`).join("\n\n"));
+  });
+  element("stsm_request_response_copy").addEventListener("click", () => copy(currentRequest()?.response || ""));
   element("stsm_history_back").addEventListener("click", () => { selectedRevision = null; renderHistory(); renderStatus(); });
   element("stsm_rollback").addEventListener("click", () => {
     try { rollbackTo(selectedRevision); selectedRevision = null; renderHistory(); renderStatus(); selectTab("scene"); }
@@ -273,12 +325,12 @@ async function initializePanel(version) {
       });
     };
     register({ name: "state_update", helpString: "Обновить состояние сцены отдельным запросом к модели.",
-      callback: async () => { const result = await runManualUpdate(); return result.ok ? JSON.stringify(result.state.data) : ""; }, returns: "JSON нового состояния." });
+      callback: async () => { const result = await runManualUpdate(); return result.ok ? stateText(result.state) : ""; }, returns: "Текст нового состояния." });
     register({ name: "state_show", helpString: "Посмотреть состояние сцены.",
-      callback: async () => { if (!isEnabled()) return ""; await showState(); return JSON.stringify(getState().data); }, returns: "JSON текущего состояния." });
+      callback: async () => { if (!isEnabled()) return ""; await showState(); return stateText(getState()); }, returns: "Текст текущего состояния." });
   }
-  cleanups.push(subscribeState(renderScene), subscribeWorker(renderStatus),
+  cleanups.push(subscribeState(renderScene), subscribeWorker(renderStatus), subscribeRequests(renderRequests),
     subscribeSettings(() => { renderStatus(); renderPin(); }));
-  on(ctx.eventTypes.CHAT_CHANGED, () => { selectedRevision = null; renderScene(); });
-  selectTab(activeTab); renderPin(); renderScene();
+  on(ctx.eventTypes.CHAT_CHANGED, () => { selectedRevision = null; selectedRequest = null; renderScene(); renderRequests(); });
+  selectTab(activeTab); renderPin(); renderScene(); renderRequests();
 }

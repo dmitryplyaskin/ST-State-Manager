@@ -1,6 +1,6 @@
 /** Keep one extension prompt synchronized with the current chat. */
 import { getSettings, subscribeSettings } from "./settings.js";
-import { getState, subscribeState } from "./state-store.js";
+import { dataText, getState, stateText, subscribeState } from "./state-store.js";
 
 export const PROMPT_KEY = "st_state_manager";
 const roles = { system: 0, user: 1, assistant: 2 };
@@ -9,7 +9,7 @@ let stopHooks = null;
 let injectionText = "";
 
 export function formatInjection(data) {
-  return `[ST-State-Manager: current scene state]\n${JSON.stringify(data, null, 2)}\n[/ST-State-Manager]`;
+  return `[ST-State-Manager: current scene state]\n${dataText(data)}\n[/ST-State-Manager]`;
 }
 
 export function updateInjection() {
@@ -17,7 +17,7 @@ export function updateInjection() {
   const settings = getSettings();
   const state = getState();
   injectionText = settings.enabled && settings.injectEnabled && ctx.getCurrentChatId?.() && state.revision > 0
-    ? formatInjection(state.data) : "";
+    ? formatInjection(stateText(state)) : "";
   ctx.setExtensionPrompt(PROMPT_KEY, injectionText, settings.injectPosition,
     settings.injectDepth, false, roles[settings.injectRole] ?? 0);
 }

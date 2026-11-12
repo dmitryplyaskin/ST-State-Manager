@@ -11,6 +11,10 @@ export function isStateObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+const isStateData = value => typeof value === "string" || isStateObject(value) || Array.isArray(value);
+export const dataText = data => typeof data === "string" ? data : JSON.stringify(data, null, 2);
+export const stateText = state => typeof state.text === "string" ? state.text : dataText(state.data);
+
 function emptyState() {
   return { version: STATE_VERSION, revision: 0, updatedAt: 0, data: {}, history: [] };
 }
@@ -22,13 +26,15 @@ function normalize(raw) {
     version: STATE_VERSION,
     revision,
     updatedAt: Number(raw.updatedAt) || 0,
-    data: isStateObject(raw.data) ? structuredClone(raw.data) : {},
+    data: isStateData(raw.data) ? structuredClone(raw.data) : {},
+    ...(typeof raw.text === "string" ? { text: raw.text } : {}),
     ...(typeof raw.trigger === "string" ? { trigger: raw.trigger } : {}),
     history: Array.isArray(raw.history) ? raw.history
-      .filter(entry => isStateObject(entry) && isStateObject(entry.data)
+      .filter(entry => isStateObject(entry) && isStateData(entry.data)
         && Number.isInteger(entry.revision) && entry.revision > 0 && entry.revision < revision)
       .map(entry => ({ revision: entry.revision, updatedAt: Number(entry.updatedAt) || 0,
-        data: structuredClone(entry.data), trigger: String(entry.trigger || "manual") })) : [],
+        data: structuredClone(entry.data), trigger: String(entry.trigger || "manual"),
+        ...(typeof entry.text === "string" ? { text: entry.text } : {}) })) : [],
   };
 }
 
@@ -47,21 +53,24 @@ export function getHistory() {
   return getState().history;
 }
 
-export function setState(data, { merge = false, trigger = "manual" } = {}) {
-  if (!isStateObject(data)) throw new Error("State must be a JSON object");
+export function setState(data, { merge = false, trigger = "manual", text } = {}) {
+  if (!isStateData(data)) throw new Error("State must be text, an object or an array");
   const snapshot = JSON.parse(JSON.stringify(data));
-  if (!isStateObject(snapshot)) throw new Error("State must serialize to a JSON object");
+  if (!isStateData(snapshot)) throw new Error("State must serialize to text, an object or an array");
   const ctx = activeContext();
   const current = getState();
   const limit = boundedInteger(getSettings().historyLimit, 50, 0, 200);
   const history = current.history;
   if (current.revision > 0) history.push({ revision: current.revision,
-    updatedAt: current.updatedAt, data: current.data, trigger: current.trigger || "manual" });
+    updatedAt: current.updatedAt, data: current.data, trigger: current.trigger || "manual",
+    ...(typeof current.text === "string" ? { text: current.text } : {}) });
+  if (merge && (!isStateObject(current.data) || !isStateObject(snapshot))) throw new Error("Only objects can be merged");
   const next = {
     version: STATE_VERSION,
     revision: current.revision + 1,
     updatedAt: Date.now(),
     data: merge ? { ...current.data, ...snapshot } : snapshot,
+    ...(typeof text === "string" && !merge ? { text } : {}),
     trigger,
     history: limit ? history.slice(-limit) : [],
   };
@@ -78,7 +87,7 @@ export function updateState(patch) {
 export function rollbackTo(revision) {
   const entry = getHistory().find(item => item.revision === Number(revision));
   if (!entry) throw new Error("This revision is no longer in the history");
-  return setState(entry.data, { trigger: "rollback" });
+  return setState(entry.data, { trigger: "rollback", text: entry.text });
 }
 
 export function resetState() {
@@ -95,10 +104,10 @@ export function exportState() {
 }
 
 export function importState(json) {
-  const parsed = typeof json === "string" ? JSON.parse(json) : json;
-  if (!isStateObject(parsed)) throw new Error("Invalid state document");
-  return setState(Object.hasOwn(parsed, "version") && Object.hasOwn(parsed, "data")
-    ? parsed.data : parsed, { trigger: "import" });
+  let parsed = json;
+  if (typeof json === "string") { try { parsed = JSON.parse(json); } catch { /* Plain text state. */ } }
+  const document = isStateObject(parsed) && Object.hasOwn(parsed, "version") && Object.hasOwn(parsed, "data");
+  return setState(document ? parsed.data : parsed, { trigger: "import", text: document ? parsed.text : undefined });
 }
 
 export function subscribeState(listener) {

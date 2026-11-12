@@ -64,6 +64,17 @@ await test("settings: automatic calls require an explicit opt-in", () => {
   assert.deepEqual([settings.getSettings().frequency, settings.getSettings().lastMessagesCount,
     settings.getSettings().injectDepth, settings.getSettings().historyLimit], [1, 200, 0, 50]);
 });
+await test("settings: migrate only the exact old bundled prompt", () => {
+  const legacy = settings.DEFAULT_PROMPT.replace("Current state:", "Current state (JSON):")
+    .replace(/Return the complete updated scene state[\s\S]*$/, "Previous state history (most recent first):\n{{history}}\n\nReturn ONLY a compact JSON object containing the new full scene state (not a patch or storage metadata). Track locations, characters, clothing, possessions and relevant facts when established; omit unknown fields. No commentary.");
+  configure({ promptTemplate: legacy });
+  settings.loadSettings();
+  assert.equal(settings.getSettings().promptTemplate, settings.DEFAULT_PROMPT);
+  assert(!settings.DEFAULT_PROMPT.includes("{{history}}"));
+  configure({ promptTemplate: legacy + "\nMy own instruction" });
+  settings.loadSettings();
+  assert.equal(settings.getSettings().promptTemplate, legacy + "\nMy own instruction");
+});
 await test("history: migrate old documents and preserve the previous state", () => {
   ctx.chatMetadata[state.STATE_KEY] = { version: 1, revision: 3, updatedAt: 100, data: { old: true } };
   state.setState({ new: true }, { trigger: "auto-after" });
@@ -89,7 +100,7 @@ await test("history: snapshots do not alias model data or public reads", () => {
 await test("history: zero disables retention, invalid data cannot erase state", () => {
   state.setState({ keep: true }); configure({ historyLimit: 0 }); state.setState({ current: true });
   assert.deepEqual(state.getHistory(), []);
-  for (const value of [null, [], 1, "bad"]) assert.throws(() => state.setState(value));
+  for (const value of [null, 1, undefined]) assert.throws(() => state.setState(value));
   assert.deepEqual(state.getState().data, { current: true });
 });
 await test("template: replace once, preserve braces in source messages", () => {
@@ -103,16 +114,24 @@ await test("prompt: read the configured non-system tail with role and name", () 
   configure({ lastMessagesCount: 1, promptTemplate: "{{last_messages}}" });
   assert.equal(worker.buildWorkerPrompt(), "[assistant] Норико: Я рядом.");
 });
-await test("parser: accept full, fenced, and prose-wrapped JSON with escaped braces", () => {
-  for (const text of ['{"ok":true}', '```json\n{"ok":true}\n```', 'Result: {"ok":true} Done.']) {
-    assert.deepEqual(worker.parseStateResponse(text), { ok: true });
+await test("parser: retain structured data and preserve arbitrary formats", () => {
+  assert.deepEqual(worker.parseStateResponse('{"ok":true}'), { ok: true });
+  assert.deepEqual(worker.parseStateResponse('[{"ok":true}]'), [{ ok: true }]);
+  for (const text of ["# Сцена\nТекст", "<scene>library</scene>", '```json\n{"ok":true}\n```', 'Result: {"ok":true} Done.', '{"ok":', "null", "3"]) {
+    assert.equal(worker.parseStateResponse(text), text);
   }
-  assert.deepEqual(worker.parseStateResponse('Here: {"x":"a } \\\" { b"}'), { x: 'a } " { b' });
+  assert.throws(() => worker.parseStateResponse("  "), /no state text/);
 });
-await test("parser: reject primitives, arrays, broken and ambiguous objects", () => {
-  for (const text of ["", "no JSON", "null", "3", "[]", '[{"ok":true}]', '{"ok":', '{"a":1} {"b":2}', '{"a":1,}']) {
-    assert.throws(() => worker.parseStateResponse(text), undefined, text);
-  }
+await test("text: history, rollback, injection and prompt preserve exact output", () => {
+  const text = "# Сцена\n  Две кружки\n<location>Комната</location>\n";
+  state.setState(text);
+  assert.equal(state.stateText(state.getState()), text);
+  configure({ promptTemplate: "{{state}}" });
+  assert.equal(worker.buildWorkerPrompt(), text);
+  assert.equal(injections.get(injector.PROMPT_KEY).value, injector.formatInjection(text));
+  state.setState(["next"]);
+  assert.equal(state.stateText(state.rollbackTo(1)), text);
+  assert.throws(() => state.updateState({ key: true }), /Only objects/);
 });
 await test("manual: commit a full state, force one non-streaming response", async () => {
   await emit("GENERATION_ENDED");
@@ -128,19 +147,32 @@ await test("manual: commit a full state, force one non-streaming response", asyn
   assert.equal(worker.getWorkerStatus().provider, "DeepSeek");
   assert.equal(worker.getWorkerStatus().requestId, "gen-worker-test");
 });
-await test("worker: malformed model output leaves current state and history untouched", async () => {
-  state.setState({ keep: true }); await emit("GENERATION_ENDED");
-  const before = state.exportState(); answer = async () => ({ content: "oops" });
-  const result = await worker.runWorker();
-  assert.equal(result.ok, false); assert.equal(worker.getWorkerStatus().status, "error");
-  assert.equal(state.exportState(), before);
+await test("worker: plain text becomes state and exact JSON whitespace survives injection", async () => {
+  await emit("GENERATION_ENDED");
+  answer = async () => ({ content: "В комнате две кружки." });
+  assert.equal((await worker.runWorker()).ok, true);
+  assert.equal(state.getState().data, "В комнате две кружки.");
+  const text = ' { "location" : "library" }\n';
+  answer = async () => ({ content: text });
+  await worker.runWorker();
+  assert.deepEqual(state.getState().data, { location: "library" });
+  assert.equal(state.stateText(state.getState()), text);
+  assert.equal(injections.get(injector.PROMPT_KEY).value, injector.formatInjection(text));
 });
 await test("worker: explain a reasoning-only response without overwriting state", async () => {
   state.setState({ keep: true }); await emit("GENERATION_ENDED");
   answer = async () => ({ content: "", reasoning: "token budget exhausted" });
   const result = await worker.runWorker();
-  assert.match(result.error, /reasoning but no state JSON/);
+  assert.match(result.error, /reasoning but no state text/);
   assert.deepEqual(state.getState().data, { keep: true });
+});
+await test("worker: explicit token truncation cannot replace the previous state", async () => {
+  state.setState("Keep this scene"); await emit("GENERATION_ENDED");
+  answer = async () => ({ content: "Truncated scene", finishReason: "length" });
+  const result = await worker.runWorker();
+  assert.equal(result.ok, false);
+  assert.equal(state.getState().data, "Keep this scene");
+  assert.match(result.error, /лимитом токенов/);
 });
 await test("before: the MESSAGE_SENT emitter waits for the worker", async () => {
   configure({ trigger: "before" }); ctx.chat.pop();

@@ -13,6 +13,7 @@ let savedSettings = 0;
 let savedMetadata = 0;
 let capturedSendRequest = null;
 let capturedMainPayload = null;
+let capturedExtractData = null;
 const fetchedRequests = [];
 
 const profiles = [
@@ -57,7 +58,7 @@ const store = {
   },
   ChatCompletionService: {
     createRequestData: (payload) => Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined)),
-    sendRequest: async (payload) => { capturedMainPayload = payload; return { content: "main-answer", reasoning: "" }; },
+    sendRequest: async (payload, extractData) => { capturedMainPayload = payload; capturedExtractData = extractData; return payload.secret_id ? { content: "profile-answer", reasoning: "because" } : { content: "main-answer", reasoning: "" }; },
   },
   eventSource: { on: () => {} },
   eventTypes: { CHAT_CHANGED: "chat_changed" },
@@ -126,7 +127,7 @@ await check("generate: profile result", async () => {
   return [result.backend, result.model, result.content, result.reasoning];
 }, ["profile", "profile-model", "profile-answer", "because"]);
 
-await check("generate: effective profile model is forwarded", () => capturedSendRequest[4].model, "profile-model");
+await check("generate: effective profile model is forwarded", () => capturedMainPayload.model, "profile-model");
 
 await check("generate: no model key when profile has no model", async () => {
   await llm.generate({
@@ -134,8 +135,8 @@ await check("generate: no model key when profile has no model", async () => {
     messages: [{ role: "user", content: "hi" }],
     maxTokens: 128,
   });
-  return capturedSendRequest[4];
-}, {});
+  return capturedMainPayload.model;
+}, "");
 
 await check("generate: override payload", async () => {
   const result = await llm.generate({
@@ -145,13 +146,12 @@ await check("generate: override payload", async () => {
     maxTokens: 128,
     temperature: 0.2,
   });
-  return [capturedSendRequest[4].model, capturedSendRequest[4].temperature, result.model];
+  return [capturedMainPayload.model, capturedMainPayload.temperature, result.model];
 }, ["other-model", 0.2, "other-model"]);
 
 await check("generate: options passed to service", () => {
-  const options = capturedSendRequest[3];
-  return [options.stream, options.extractData, options.includePreset];
-}, [false, false, true]);
+  return [capturedMainPayload.stream, capturedExtractData];
+}, [false, false]);
 
 // Generation through the main connection
 await check("generate: main connection", async () => {
@@ -230,6 +230,7 @@ await check("errors: plain error", () => llm.describeError(new Error("boom")), "
 await check("state: empty by default", () => getState(), { version: 1, revision: 0, updatedAt: 0, data: {}, history: [] });
 
 await check("state: set bumps revision", () => {
+  savedMetadata = 0;
   const s = setState({ location: "tavern" });
   return [s.revision, s.data, savedMetadata];
 }, [1, { location: "tavern" }, 1]);

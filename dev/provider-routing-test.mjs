@@ -56,7 +56,7 @@ await test("active profile: an empty saved provider list cannot erase the visibl
 });
 await test("generation preset off: routing still applies", async () => {
   await generate("active", { includePreset: false });
-  assert.equal(captured.options.includePreset, false);
+  assert.equal(captured.payload.temperature, undefined);
   assert.deepEqual(captured.payload.provider, ["DeepSeek"]);
   assert.equal(captured.payload.allow_fallbacks, false);
 });
@@ -100,7 +100,7 @@ await test("response diagnostics: expose the actual provider, request ID and rea
   const result = await generate();
   assert.deepEqual([result.content, result.reasoning, result.provider, result.requestId],
     ['{"ok":true}', "Reasoning text", "DeepSeek", "gen-test"]);
-  assert.equal(captured.options.extractData, false);
+  assert.equal(captured.extractData, false);
 });
 await test("explicit caller override: it wins over resolved routing", async () => {
   await generate("active", { overridePayload: { provider: ["Explicit"], allow_fallbacks: false } });
@@ -112,15 +112,16 @@ await test("main connection: retain routing even when the preset switch is off",
   assert.equal(captured.payload.allow_fallbacks, false);
   assert.equal(captured.extractData, false);
 });
-await test("other APIs: do not add OpenRouter constraints or change data extraction", async () => {
+await test("other APIs: do not add OpenRouter constraints", async () => {
   await generate("custom");
-  assert.deepEqual(captured.payload, { model: "custom-model" });
-  assert.equal(captured.options.extractData, true);
+  assert.equal(captured.payload.model, "custom-model");
+  assert.equal(captured.payload.provider, undefined);
+  assert.equal(captured.extractData, false);
 });
 await test("connection check: use the same routing, one completion and at most 128 tokens", async () => {
   settings.updateSetting("profileId", "active");
   const result = await llm.runTestRequest("OK?");
-  assert.equal(captured.maxTokens, 128);
+  assert.equal(captured.payload.max_tokens, 128);
   assert.deepEqual(captured.payload.provider, ["DeepSeek"]);
   assert.equal(captured.payload.n, 1);
   assert.equal(result.provider, "DeepSeek");

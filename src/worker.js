@@ -1,7 +1,7 @@
 /** Independent, non-streaming state extraction and chat-event scheduling. */
 import { boundedInteger, getSettings, isEnabled, subscribeSettings } from "./settings.js";
 import { describeError, generate } from "./llm-client.js";
-import { COUNTER_KEY, STATE_KEY, getState, isStateObject, setState, subscribeState } from "./state-store.js";
+import { COUNTER_KEY, STATE_KEY, getState, isStateObject, stateText, setState, subscribeState } from "./state-store.js";
 
 const listeners = new Set();
 const countedMessages = new WeakSet();
@@ -35,7 +35,7 @@ export function buildWorkerPrompt(ctx = SillyTavern.getContext(), settings = get
   const messages = (ctx.chat || []).filter(message => !message.is_system)
     .slice(-boundedInteger(settings.lastMessagesCount, 2, 1, 200));
   return renderTemplate(settings.promptTemplate, {
-    state: JSON.stringify(state.data, null, 2),
+    state: state.revision ? stateText(state) : "",
     history: JSON.stringify([...state.history].reverse(), null, 2),
     last_messages: messages.map(message =>
       `[${message.is_user ? "user" : "assistant"}] ${message.name || (message.is_user ? ctx.name1 : ctx.name2) || "Unknown"}: ${String(message.mes || "")}`).join("\n\n"),
@@ -44,35 +44,15 @@ export function buildWorkerPrompt(ctx = SillyTavern.getContext(), settings = get
   });
 }
 
-/** Accept a full object, a fenced object, or a single object surrounded by prose. */
+/** Structured data remains available to integrations; every other format stays text. */
 export function parseStateResponse(response) {
-  const text = String(response ?? "").trim();
-  const fenced = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i.exec(text);
-  const source = fenced ? fenced[1].trim() : text;
-  let parsed;
-  try { parsed = JSON.parse(source); }
-  catch {
-    // Balanced scanning keeps braces inside JSON strings intact and rejects
-    // multiple/truncated objects instead of silently committing a partial state.
-    const start = source.indexOf("{");
-    if (start < 0 || /^[\s\[]/.test(source[0] || "")) throw new Error("The model did not return a JSON object");
-    let depth = 0, quoted = false, escaped = false, end = -1;
-    for (let i = start; i < source.length; i++) {
-      const char = source[i];
-      if (quoted) {
-        if (escaped) escaped = false;
-        else if (char === "\\") escaped = true;
-        else if (char === '"') quoted = false;
-      } else if (char === '"') quoted = true;
-      else if (char === "{") depth++;
-      else if (char === "}" && --depth === 0) { end = i; break; }
-    }
-    if (end < 0 || /[{}\[\]]/.test(source.slice(end + 1))) throw new Error("The model returned incomplete or ambiguous JSON");
-    try { parsed = JSON.parse(source.slice(start, end + 1)); }
-    catch { throw new Error("The model returned invalid JSON"); }
-  }
-  if (!isStateObject(parsed)) throw new Error("State must be a JSON object, not an array or a primitive");
-  return parsed;
+  const text = String(response ?? "");
+  if (!text.trim()) throw new Error("The model returned no state text");
+  try {
+    const parsed = JSON.parse(text);
+    if (isStateObject(parsed) || Array.isArray(parsed)) return parsed;
+  } catch { /* The prompt defines the format, not the parser. */ }
+  return text;
 }
 
 function chatSignature(ctx) {
@@ -129,19 +109,21 @@ export async function runWorker(trigger = "manual", { consumeCounter = false } =
       maxTokens: settings.maxTokens, temperature: settings.temperature,
       includePreset: settings.includePreset, stream: false, signal: job.controller.signal,
       overridePayload: { n: 1, use_fallback: false, enable_web_search: false },
+      purpose: trigger,
     }), aborted]);
     if (!currentJob(job)) {
       if (active === job) publish({ status: "idle", message: "Discarded: chat or state changed" });
       return { ok: false, skipped: "Chat or state changed while the request was running" };
     }
     publish({ response: result.content, provider: result.provider || "", requestId: result.requestId || "" });
+    if (["length", "max_tokens"].includes(result.finishReason)) throw new Error("Ответ обрезан лимитом токенов. Увеличьте лимит ответа в настройках. Прежнее состояние сохранено.");
     if (!result.content.trim()) throw new Error(result.reasoning
-      ? "The model returned reasoning but no state JSON. Increase Max tokens or reduce reasoning in the profile preset."
+      ? "The model returned reasoning but no state text. Increase Max tokens or reduce reasoning in the profile preset."
       : "The model returned no state text. Increase Max tokens or check the profile preset.");
     const data = parseStateResponse(result.content);
     if (!currentJob(job)) return { ok: false, skipped: "Chat or state changed" };
     job.committing = true;
-    const state = setState(data, { trigger });
+    const state = setState(data, { trigger, text: result.content });
     const elapsedMs = Date.now() - job.started;
     publish({ status: "idle", message: `Updated to revision ${state.revision}`, elapsedMs });
     console.info(`[ST-State-Manager] ${trigger}: revision ${state.revision}, ${result.model}, ${elapsedMs} ms`);

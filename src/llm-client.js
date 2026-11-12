@@ -16,6 +16,7 @@
  */
 
 import { getSettings, updateSetting } from "./settings.js";
+import { beginRequest } from "./request-log.js";
 
 const LOG_PREFIX = "[ST-State-Manager]";
 
@@ -156,16 +157,19 @@ function routingOverrides(profileId) {
   return payload;
 }
 
-function extractOpenRouterResponse(result) {
-  if (!Array.isArray(result?.choices)) return result;
-  const message = result.choices[0]?.message || {};
+function extractChatResponse(result) {
+  if (typeof result?.content === "string" && !result?.choices) return result;
+  const message = result?.choices?.[0]?.message || {};
   const reasoning = message.reasoning || message.reasoning_content
-    || (Array.isArray(message.reasoning_details) ? message.reasoning_details.map(item => item.text || "").join("\n") : "");
+    || (Array.isArray(message.reasoning_details) ? message.reasoning_details.map(item => item.text || "").join("\n") : "")
+    || (Array.isArray(result?.content) ? result.content.filter(part => part.type === "thinking").map(part => part.thinking).join("\n\n") : "")
+    || result?.responseContent?.parts?.filter(part => part.thought).map(part => part.text).join("\n\n") || "";
   return {
     content: context().extractMessageFromData(result, "openai"),
     reasoning: typeof reasoning === "string" ? reasoning : "",
-    provider: typeof result.provider === "string" ? result.provider : "",
-    requestId: typeof result.id === "string" ? result.id : "",
+    provider: typeof result?.provider === "string" ? result.provider : "",
+    requestId: typeof result?.id === "string" ? result.id : "",
+    finishReason: result?.choices?.[0]?.finish_reason || result?.stop_reason || "",
   };
 }
 
@@ -374,6 +378,30 @@ function normalizeModels(raw) {
  * @returns {Promise<GenerateResult>}
  */
 export async function generate(options) {
+  const started = Date.now();
+  const update = beginRequest({ purpose: options?.purpose || "generation", profileId: options?.profileId || "",
+    profileName: getProfile(options?.profileId)?.name || "Текущее подключение", model: options?.model || "",
+    messages: options?.messages, maxTokens: options?.maxTokens, temperature: options?.temperature,
+    includePreset: options?.includePreset, overrides: options?.overridePayload });
+  const signal = options?.signal;
+  const cancelled = () => update({ status: "cancelled", elapsedMs: Date.now() - started,
+    error: describeError(signal.reason || "Cancelled") });
+  signal?.addEventListener("abort", cancelled, { once: true });
+  try {
+    if (signal?.aborted) throw signal.reason || new DOMException("Cancelled", "AbortError");
+    const result = await generateRequest({ ...options, onRequest: request => update({ payload: request }) });
+    update({ status: signal?.aborted ? "cancelled" : "success", elapsedMs: Date.now() - started,
+      response: result.content, reasoning: result.reasoning, model: result.model,
+      provider: result.provider || "", requestId: result.requestId || "",
+      ...(result.rawResponse ? { rawResponse: result.rawResponse } : {}) });
+    return result;
+  } catch (error) {
+    update({ status: signal?.aborted ? "cancelled" : "error", elapsedMs: Date.now() - started, error: describeError(error) });
+    throw error;
+  } finally { signal?.removeEventListener("abort", cancelled); }
+}
+
+async function generateRequest(options) {
   const {
     profileId = "",
     model = "",
@@ -385,6 +413,7 @@ export async function generate(options) {
     signal = null,
     onToken = null,
     overridePayload = {},
+    onRequest,
   } = options ?? {};
 
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -406,6 +435,7 @@ export async function generate(options) {
       signal,
       onToken,
       overridePayload,
+      onRequest,
     });
   }
 
@@ -419,6 +449,7 @@ export async function generate(options) {
     onToken,
     includePreset,
     overridePayload,
+    onRequest,
   });
 }
 
@@ -466,6 +497,36 @@ async function generateWithProfile(options) {
     overrides.temperature = Number(options.temperature);
   }
 
+  // Prepare chat-completion payloads locally so the journal records the exact
+  // body passed to SillyTavern, including the selected generation preset.
+  const profile = getProfile(options.profileId);
+  if (!profile) throw new Error("Connection profile not found");
+  const api = ctx.CONNECT_API_MAP?.[profile.api];
+  const chatService = ctx.ChatCompletionService;
+  if (api?.selected === "openai" && chatService?.createRequestData && chatService?.sendRequest) {
+    const proxy = getProxyPreset(profile);
+    let data = chatService.createRequestData({ stream: options.stream, messages: options.messages,
+      max_tokens: options.maxTokens, model: profile.model, chat_completion_source: api.source,
+      secret_id: profile["secret-id"], custom_url: profile["api-url"],
+      vertexai_region: profile["api-url"], zai_endpoint: profile["api-url"], siliconflow_endpoint: profile["api-url"],
+      minimax_endpoint: profile["api-url"], pollinations_endpoint: profile["api-url"],
+      reverse_proxy: proxy?.url, proxy_password: proxy?.password,
+      custom_prompt_post_processing: profile["prompt-post-processing"], ...overrides });
+    const preset = options.includePreset && profile.preset
+      ? ctx.getPresetManager?.("openai")?.getCompletionPresetByName(profile.preset) : null;
+    if (preset && chatService.presetToGeneratePayload) data = await chatService.presetToGeneratePayload(preset, {}, data);
+    if (options.signal?.aborted) throw options.signal.reason;
+    options.onRequest?.(data);
+    const raw = await chatService.sendRequest(data, options.stream, options.signal);
+    return consumeResult(options.stream ? raw : extractChatResponse(raw), options.onToken, {
+      backend: "profile", profileId: options.profileId, model: trimmedModel || String(profile.model || ""),
+      ...(!options.stream ? { rawResponse: raw } : {}),
+    });
+  }
+
+  options.onRequest?.({ messages: options.messages, max_tokens: options.maxTokens, ...overrides,
+    stream: options.stream, includePreset: options.includePreset, preset: profile.preset,
+    note: "Параметры сервиса подключения; форматирование text completion выполняет Таверна" });
   const result = await service.sendRequest(
     options.profileId,
     options.messages,
@@ -479,10 +540,11 @@ async function generateWithProfile(options) {
     overrides,
   );
 
-  return consumeResult(routing && !options.stream ? extractOpenRouterResponse(result) : result, options.onToken, {
+  return consumeResult(routing && !options.stream ? extractChatResponse(result) : result, options.onToken, {
     backend: "profile",
     profileId: options.profileId,
     model: trimmedModel || String(getProfile(options.profileId)?.model ?? ""),
+    ...(!options.stream ? { rawResponse: result } : {}),
   });
 }
 
@@ -539,14 +601,16 @@ async function generateWithMainApi(options) {
   const data = options.includePreset && typeof service.presetToGeneratePayload === "function"
     ? await service.presetToGeneratePayload(settings, {}, payload)
     : service.createRequestData(payload);
-  const rawOpenRouter = settings.chat_completion_source === "openrouter" && !options.stream;
-  const result = await service.sendRequest(data, !rawOpenRouter, options.signal);
+  if (options.signal?.aborted) throw options.signal.reason;
+  options.onRequest?.(data);
+  const result = await service.sendRequest(data, options.stream, options.signal);
   const model = String(options.resolvedModel || ctx.getChatCompletionModel(settings) || "");
 
-  return consumeResult(rawOpenRouter ? extractOpenRouterResponse(result) : result, options.onToken, {
+  return consumeResult(options.stream ? result : extractChatResponse(result), options.onToken, {
     backend: "main",
     profileId: "",
     model,
+    ...(!options.stream ? { rawResponse: result } : {}),
   });
 }
 
@@ -585,6 +649,7 @@ async function consumeResult(result, onToken, meta) {
     reasoning: typeof result?.reasoning === "string" ? result.reasoning : "",
     provider: typeof result?.provider === "string" ? result.provider : "",
     requestId: typeof result?.requestId === "string" ? result.requestId : "",
+    finishReason: result?.finishReason || "",
   };
 }
 
@@ -623,6 +688,7 @@ export async function runTestRequest(prompt, { signal } = {}) {
     stream: false,
     signal,
     overridePayload: { n: 1, use_fallback: false, enable_web_search: false },
+    purpose: "connection-test",
   });
   return { ...result, elapsedMs: Math.round(performance.now() - started) };
 }

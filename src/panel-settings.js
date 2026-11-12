@@ -2,6 +2,7 @@
 import { DEFAULT_PROMPT, getSettings, subscribeSettings, updateSetting } from "./settings.js";
 import { describeError, fetchModels, getOpenRouterRouting, getProfile, getSupportedProfiles,
   rememberActiveRouting, resolveModel, runTestRequest } from "./llm-client.js";
+import { buildWorkerPrompt } from "./worker.js";
 
 export function bindPanelSettings(root) {
   const controller = new AbortController();
@@ -30,22 +31,15 @@ export function bindPanelSettings(root) {
     const settings = getSettings();
     const profile = getProfile(settings.profileId);
     const effective = resolveModel(settings.profileId, settings.model);
-    field("stsm_model").placeholder = "Из профиля подключения";
-    field("stsm_model_hint").textContent = effective ? `Будет использована: ${effective}` : "Выберите профиль или укажите модель.";
-    field("stsm_profile_hint").textContent = settings.profileId
-      ? profile ? "Отдельный запрос к модели." : "Профиль недоступен. Выберите другой; автоматической замены не будет."
-      : "Используется основное chat completion подключение.";
+    field("stsm_model").placeholder = "Из профиля";
+    field("stsm_model_hint").textContent = !settings.model && effective ? `Из профиля: ${effective}` : "";
+    field("stsm_profile_hint").textContent = settings.profileId && !profile ? "Профиль недоступен" : "";
     const routing = getOpenRouterRouting(settings.profileId);
     field("stsm_route_info").hidden = !routing;
     if (routing) {
-      field("stsm_provider_hint").textContent = routing.provider.length
-        ? `Провайдер: ${routing.provider.join(", ")}. ${routing.allow_fallbacks ? "Резервные провайдеры разрешены." : "Другие провайдеры отключены."}`
-        : "Провайдер не ограничен: OpenRouter выберет его автоматически.";
-      field("stsm_routing_source").textContent = {
-        active: "Из текущих настроек выбранного профиля.",
-        remembered: "Сохранённый выбор этого профиля; основное подключение может быть другим.",
-        preset: "Из сохранённого пресета профиля.",
-      }[routing.source];
+      field("stsm_provider_hint").textContent = `${routing.provider.join(", ") || "Автовыбор провайдера"} · резервные провайдеры ${routing.allow_fallbacks ? "разрешены" : "отключены"}`;
+      field("stsm_routing_source").textContent = "";
+      field("stsm_route_info").title = { active: "Из текущего подключения", remembered: "Сохранено для этого профиля", preset: "Из пресета профиля" }[routing.source];
     }
   }
 
@@ -58,7 +52,7 @@ export function bindPanelSettings(root) {
       else if (document.activeElement !== input) input.value = value === null ? "" : String(value);
       input.disabled = !settings.enabled;
     }
-    for (const id of ["stsm_profile", "stsm_model", "stsm_restore_prompt", "stsm_expand_prompt"]) field(id).disabled = !settings.enabled;
+    for (const id of ["stsm_profile", "stsm_model", "stsm_restore_prompt", "stsm_expand_prompt", "stsm_preview_prompt"]) field(id).disabled = !settings.enabled;
     field("stsm_refresh_models").disabled = !settings.enabled || loadingModels;
     field("stsm_test_run").disabled = !settings.enabled || testing;
     const inChat = settings.enabled && settings.injectEnabled && settings.injectPosition === 1;
@@ -84,7 +78,7 @@ export function bindPanelSettings(root) {
       field("stsm_model_list").replaceChildren(...models.map(model => new Option(model.name, model.id)));
       field("stsm_model_status").textContent = error
         ? "Список недоступен. Идентификатор модели можно ввести вручную."
-        : `Моделей в списке: ${models.length}.`;
+        : "";
     } finally {
       if (id === requestId) { loadingModels = false; refreshControls(); }
     }
@@ -107,6 +101,12 @@ export function bindPanelSettings(root) {
     void refreshModels();
   });
   field("stsm_refresh_models").addEventListener("click", () => void refreshModels(true));
+  field("stsm_preview_prompt").addEventListener("click", async () => {
+    const ctx = SillyTavern.getContext();
+    const pre = document.createElement("pre");
+    pre.className = "stsm-code"; pre.textContent = buildWorkerPrompt();
+    await ctx.callGenericPopup(pre, ctx.POPUP_TYPE.TEXT, "", { wide: true, large: true, allowVerticalScrolling: true, okButton: "Закрыть" });
+  });
   field("stsm_expand_prompt").addEventListener("click", async () => {
     const ctx = SillyTavern.getContext();
     const container = document.createElement("div");
