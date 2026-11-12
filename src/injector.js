@@ -5,7 +5,7 @@ import { getState, subscribeState } from "./state-store.js";
 export const PROMPT_KEY = "st_state_manager";
 const roles = { system: 0, user: 1, assistant: 2 };
 const processed = new WeakSet();
-let initialized = false;
+let stopHooks = null;
 let injectionText = "";
 
 export function formatInjection(data) {
@@ -48,15 +48,23 @@ export function mergeStateMessage(messages, text) {
 }
 
 export function initInjector() {
-  if (initialized) return;
-  initialized = true;
-  subscribeState(updateInjection);
-  subscribeSettings(updateInjection);
+  if (stopHooks) return stopHooks;
+  const cleanups = [subscribeState(updateInjection), subscribeSettings(updateInjection)];
   const ctx = SillyTavern.getContext();
-  ctx.eventSource.on(ctx.eventTypes.CHAT_COMPLETION_PROMPT_READY, ({ chat }) => {
+  const onPrompt = ({ chat }) => {
     const settings = getSettings();
     if (settings.enabled && settings.injectEnabled && settings.injectMerge
       && settings.injectPosition === 1 && settings.injectRole !== "system") mergeStateMessage(chat, injectionText);
-  });
+  };
+  ctx.eventSource.on(ctx.eventTypes.CHAT_COMPLETION_PROMPT_READY, onPrompt);
+  stopHooks = () => {
+    for (const cleanup of cleanups) cleanup();
+    ctx.eventSource.removeListener(ctx.eventTypes.CHAT_COMPLETION_PROMPT_READY, onPrompt);
+    injectionText = "";
+    const settings = getSettings();
+    ctx.setExtensionPrompt(PROMPT_KEY, "", settings.injectPosition, settings.injectDepth, false, roles[settings.injectRole] ?? 0);
+    stopHooks = null;
+  };
   updateInjection();
+  return stopHooks;
 }

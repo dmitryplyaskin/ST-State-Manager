@@ -12,10 +12,8 @@
  */
 
 import { loadSettings } from "./src/settings.js";
-import { initStateHooks } from "./src/state-store.js";
 import { initSettingsUI } from "./src/ui.js";
-import { initWorkerHooks } from "./src/worker.js";
-import { initInjector } from "./src/injector.js";
+import { initRuntime } from "./src/runtime.js";
 
 const LOG_PREFIX = "[ST-State-Manager]";
 
@@ -33,9 +31,7 @@ function init() {
   const context = SillyTavern.getContext();
 
   loadSettings();
-  initStateHooks();
-  initWorkerHooks();
-  initInjector();
+  initRuntime();
 
   // The extensions panel is built after the app is ready; the settings panel
   // template can only be appended once its container exists.

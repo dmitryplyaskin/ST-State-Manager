@@ -1,0 +1,78 @@
+<div id="stsm-drawer" class="drawer">
+  <div class="drawer-toggle">
+    <button type="button" class="drawer-icon stsm-drawer-toggle fa-solid fa-database fa-fw closedIcon" aria-label="Открыть панель состояния" aria-expanded="false" aria-controls="stsm-panel" title="Состояние сцены"></button>
+  </div>
+  <section id="stsm-panel" class="drawer-content closedDrawer fillRight stsm-panel" aria-label="Состояние сцены">
+    <div id="stsm-panelheader" class="fa-solid fa-grip drag-grabber" title="Переместить панель"></div>
+    <header class="stsm-panel-heading">
+      <h3>Состояние сцены</h3>
+      <div class="stsm-heading-actions">
+        <button id="stsm_pin" type="button" class="menu_button" aria-label="Закрепить панель" aria-pressed="false" title="Оставлять панель открытой"><i class="fa-solid fa-unlock" aria-hidden="true"></i></button>
+        <button id="stsm_panel_close" type="button" class="menu_button" aria-label="Закрыть панель" title="Закрыть панель"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
+      </div>
+    </header>
+    <div class="stsm-panel-toolbar">
+      <label class="checkbox_label" for="stsm_autoUpdate"><input id="stsm_autoUpdate" data-stsm-setting="autoUpdate" type="checkbox" /><span>Автообновление</span></label>
+      <div class="stsm-actions"><button id="stsm_update_now" type="button" class="menu_button"><i class="fa-solid fa-rotate" aria-hidden="true"></i>Обновить сейчас</button><button id="stsm_cancel" type="button" class="menu_button" hidden>Отменить</button></div>
+      <p id="stsm_panel_status" role="status" aria-live="polite"></p>
+      <small id="stsm_panel_automation" class="text_muted"></small>
+    </div>
+    <div class="stsm-tabs" role="tablist" aria-label="Разделы панели">
+      <button id="stsm_tab_scene" role="tab" type="button" aria-selected="true" aria-controls="stsm_view_scene" data-stsm-tab="scene">Состояние</button>
+      <button id="stsm_tab_history" role="tab" type="button" aria-selected="false" aria-controls="stsm_view_history" data-stsm-tab="history" tabindex="-1">История</button>
+      <button id="stsm_tab_settings" role="tab" type="button" aria-selected="false" aria-controls="stsm_view_settings" data-stsm-tab="settings" tabindex="-1">Настройки</button>
+      <button id="stsm_tab_prompt" role="tab" type="button" aria-selected="false" aria-controls="stsm_view_prompt" data-stsm-tab="prompt" tabindex="-1">Промпт</button>
+    </div>
+    <div class="stsm-panel-body">
+      <details id="stsm_worker_output" class="stsm-notice" hidden><summary>Подробности ошибки</summary><p id="stsm_worker_error"></p><pre id="stsm_worker_response" class="stsm-code"></pre></details>
+      <section id="stsm_view_scene" role="tabpanel" aria-labelledby="stsm_tab_scene" tabindex="0">
+        <div class="stsm-view-heading"><h4>Текущая сцена</h4><button id="stsm_panel_copy" type="button" class="menu_button">Копировать JSON</button></div>
+        <p id="stsm_panel_revision" class="text_muted"></p>
+        <div id="stsm_scene_empty" class="stsm-empty"><p>Состояние ещё не создано.</p><small>Откройте чат, выберите подключение в настройках панели и нажмите «Обновить сейчас».</small></div>
+        <div id="stsm_panel_state" class="stsm-state-view"></div>
+        <details id="stsm_scene_json" class="stsm-disclosure"><summary>JSON состояния</summary><pre id="stsm_state_json" class="stsm-code" tabindex="0"></pre></details>
+        <details class="stsm-disclosure"><summary>Сброс состояния</summary><p class="text_muted">Удалит состояние, историю и счётчик обновлений только этого чата.</p><button id="stsm_panel_reset" type="button" class="menu_button redWarningBG">Сбросить состояние и историю</button></details>
+      </section>
+      <section id="stsm_view_history" role="tabpanel" aria-labelledby="stsm_tab_history" tabindex="0" hidden>
+        <div id="stsm_history_browser"><h4>Предыдущие состояния</h4><p id="stsm_history_count" class="text_muted"></p><p id="stsm_history_empty" class="stsm-empty">История появится после следующего обновления состояния.</p><ol id="stsm_history_list" class="stsm-history-list"></ol></div>
+        <div id="stsm_history_detail" hidden><button id="stsm_history_back" type="button" class="menu_button"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i>К списку ревизий</button><h4 id="stsm_history_heading" tabindex="-1"></h4><p id="stsm_history_stamp" class="text_muted"></p><button id="stsm_rollback" type="button" class="menu_button">Восстановить это состояние</button><small class="text_muted">Текущее состояние останется в истории. Восстановление создаст новую ревизию.</small><div id="stsm_history_preview" class="stsm-state-view"></div><details class="stsm-disclosure"><summary>JSON этой ревизии</summary><pre id="stsm_history_json" class="stsm-code" tabindex="0"></pre></details></div>
+      </section>
+      <section id="stsm_view_settings" role="tabpanel" aria-labelledby="stsm_tab_settings" tabindex="0" hidden>
+        <small class="text_muted">Настройки общие для всех чатов.</small>
+        <fieldset class="stsm-setting-group"><legend>Подключение модели</legend>
+          <label for="stsm_profile">Профиль подключения</label><select id="stsm_profile" class="text_pole"></select>
+          <small id="stsm_profile_hint" class="text_muted"></small>
+          <label for="stsm_model">Модель для обновления состояния</label><div class="stsm-input-action"><input id="stsm_model" class="text_pole" type="text" list="stsm_model_list" autocomplete="off" spellcheck="false" /><datalist id="stsm_model_list"></datalist><button id="stsm_refresh_models" type="button" class="menu_button" aria-label="Обновить список моделей" title="Обновить список моделей"><i class="fa-solid fa-rotate" aria-hidden="true"></i></button></div>
+          <small id="stsm_model_hint" class="text_muted"></small><small id="stsm_model_status" class="text_muted"></small>
+          <div id="stsm_route_info" class="stsm-route-info" hidden><p id="stsm_provider_hint"></p><small id="stsm_routing_source" class="text_muted"></small></div>
+          <button id="stsm_test_run" type="button" class="menu_button">Проверить подключение</button><small class="text_muted">Короткий запрос, до 128 токенов. Состояние и сообщения чата не меняются.</small><output id="stsm_test_output" class="stsm-test-output" aria-live="polite"></output>
+        </fieldset>
+        <fieldset class="stsm-setting-group"><legend>Когда обновлять</legend>
+          <label for="stsm_trigger">Момент обновления</label><select id="stsm_trigger" data-stsm-setting="trigger" class="text_pole"><option value="after">После ответа модели</option><option value="before">До ответа модели, с ожиданием</option></select>
+          <label for="stsm_frequency">Каждые N сообщений пользователя</label><input id="stsm_frequency" data-stsm-setting="frequency" class="text_pole" type="number" min="1" max="1000" step="1" />
+          <label class="checkbox_label" for="stsm_regenOnSwipe"><input id="stsm_regenOnSwipe" data-stsm-setting="regenOnSwipe" type="checkbox" /><span>Обновлять при свайпе и перегенерации</span></label><small class="text_muted">Свайпы обрабатываются при включённом автообновлении и не меняют счётчик сообщений.</small>
+        </fieldset>
+        <details class="stsm-disclosure"><summary>Вставка состояния в контекст</summary><div class="stsm-setting-group">
+          <label class="checkbox_label" for="stsm_injectEnabled"><input id="stsm_injectEnabled" data-stsm-setting="injectEnabled" type="checkbox" /><span>Передавать состояние основной модели</span></label>
+          <label for="stsm_injectPosition">Расположение</label><select id="stsm_injectPosition" data-stsm-setting="injectPosition" class="text_pole"><option value="1">В истории сообщений</option><option value="0">После описания сценария</option><option value="2">Перед описанием сценария</option></select>
+          <label for="stsm_injectRole">Роль сообщения</label><select id="stsm_injectRole" data-stsm-setting="injectRole" class="text_pole"><option value="system">System</option><option value="user">User</option><option value="assistant">Assistant</option></select>
+          <label for="stsm_injectDepth">Глубина от конца истории</label><input id="stsm_injectDepth" data-stsm-setting="injectDepth" class="text_pole" type="number" min="0" max="1000" step="1" /><small class="text_muted">0 — в самом конце. Роль и глубина применяются при вставке в историю сообщений.</small>
+          <label class="checkbox_label" for="stsm_injectMerge"><input id="stsm_injectMerge" data-stsm-setting="injectMerge" type="checkbox" /><span>Склеивать с соседним сообщением той же роли</span></label><small class="text_muted">Для ролей User и Assistant в chat completion. Обработка API также может склеивать сообщения.</small>
+        </div></details>
+        <details class="stsm-disclosure"><summary>Лимиты и параметры генерации</summary><div class="stsm-setting-group">
+          <label for="stsm_max_tokens">Лимит ответа, токенов</label><input id="stsm_max_tokens" data-stsm-setting="maxTokens" class="text_pole" type="number" min="16" max="8192" step="16" /><small class="text_muted">У рассуждающих моделей часть лимита расходуется на размышления.</small>
+          <label for="stsm_temperature">Температура</label><input id="stsm_temperature" data-stsm-setting="temperature" class="text_pole" type="number" min="0" max="2" step="0.05" placeholder="Из пресета" />
+          <label class="checkbox_label" for="stsm_include_preset"><input id="stsm_include_preset" data-stsm-setting="includePreset" type="checkbox" /><span>Использовать параметры пресета профиля</span></label><small class="text_muted">Выбор провайдеров сохраняется независимо от этого переключателя.</small>
+          <label for="stsm_historyLimit">Предыдущих ревизий в истории</label><input id="stsm_historyLimit" data-stsm-setting="historyLimit" class="text_pole" type="number" min="0" max="200" step="1" /><small class="text_muted">0 — не сохранять историю. Новый лимит применяется при следующем обновлении.</small>
+        </div></details>
+      </section>
+      <section id="stsm_view_prompt" role="tabpanel" aria-labelledby="stsm_tab_prompt" tabindex="0" hidden>
+        <h4>Как модель обновляет состояние</h4><p class="text_muted">Опишите, что отслеживать. Модель должна вернуть полный JSON-объект нового состояния. Шаблон общий для всех чатов.</p>
+        <div class="stsm-setting-group"><label for="stsm_lastMessagesCount">Последних сообщений чата для анализа</label><input id="stsm_lastMessagesCount" data-stsm-setting="lastMessagesCount" class="text_pole" type="number" min="1" max="200" step="1" /></div>
+        <div class="stsm-view-heading"><label for="stsm_promptTemplate">Промпт обновления</label><button id="stsm_expand_prompt" class="menu_button" type="button"><i class="fa-solid fa-expand" aria-hidden="true"></i>Развернуть</button></div><textarea id="stsm_promptTemplate" data-stsm-setting="promptTemplate" class="text_pole stsm-prompt-editor" rows="16" spellcheck="false"></textarea><small class="text_muted">Изменения сохраняются автоматически.</small>
+        <details class="stsm-disclosure"><summary>Переменные шаблона</summary><dl class="stsm-variable-list"><dt><code>{{state}}</code></dt><dd>Текущее состояние</dd><dt><code>{{last_messages}}</code></dt><dd>Последние сообщения</dd><dt><code>{{history}}</code></dt><dd>Предыдущие состояния, от новых к старым</dd><dt><code>{{chat_name}}</code></dt><dd>Название чата</dd><dt><code>{{char_name}}</code></dt><dd>Имя персонажа</dd></dl></details>
+        <button id="stsm_restore_prompt" class="menu_button" type="button">Вернуть исходный промпт</button>
+      </section>
+    </div>
+  </section>
+</div>

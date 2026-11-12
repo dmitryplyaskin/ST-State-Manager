@@ -8,8 +8,8 @@ const countedMessages = new WeakSet();
 const REQUEST_TIMEOUT_MS = 120000;
 let active = null;
 let generation = null;
-let initialized = false;
-let status = { status: "idle", message: "Ready", trigger: "", elapsedMs: 0, response: "" };
+let stopHooks = null;
+let status = { status: "idle", message: "Ready", trigger: "", elapsedMs: 0, response: "", provider: "", requestId: "" };
 
 function publish(next) {
   status = { ...status, ...next };
@@ -108,7 +108,7 @@ export async function runWorker(trigger = "manual", { consumeCounter = false } =
     metadata: ctx.chatMetadata, chatId: ctx.getCurrentChatId(),
     signature: chatSignature(ctx), stateRef: ctx.chatMetadata[STATE_KEY], committing: false };
   active = job;
-  publish({ status: "running", message: "Updating scene state…", trigger, elapsedMs: 0, response: "" });
+  publish({ status: "running", message: "Updating scene state…", trigger, elapsedMs: 0, response: "", provider: "", requestId: "" });
   let timeout;
   let onAbort;
   try {
@@ -134,7 +134,7 @@ export async function runWorker(trigger = "manual", { consumeCounter = false } =
       if (active === job) publish({ status: "idle", message: "Discarded: chat or state changed" });
       return { ok: false, skipped: "Chat or state changed while the request was running" };
     }
-    publish({ response: result.content });
+    publish({ response: result.content, provider: result.provider || "", requestId: result.requestId || "" });
     if (!result.content.trim()) throw new Error(result.reasoning
       ? "The model returned reasoning but no state JSON. Increase Max tokens or reduce reasoning in the profile preset."
       : "The model returned no state text. Increase Max tokens or check the profile preset.");
@@ -184,7 +184,7 @@ export async function onMessageSent(id) {
 }
 
 export function onGenerationStarted(type, _options, dryRun) {
-  if (dryRun || ![undefined, "normal", "swipe", "regenerate", "continue"].includes(type)) return;
+  if (!isEnabled() || dryRun || ![undefined, "normal", "swipe", "regenerate", "continue"].includes(type)) return;
   cancelWorker("Cancelled: a new chat generation started");
   generation = { type: type || "normal", metadata: SillyTavern.getContext().chatMetadata,
     ended: false, received: false, stopped: false, handled: false };
@@ -234,10 +234,14 @@ export async function onMessageSwiped(id) {
 }
 
 export function initWorkerHooks() {
-  if (initialized) return;
-  initialized = true;
+  if (stopHooks) return stopHooks;
   const ctx = SillyTavern.getContext();
-  const on = (name, callback) => { if (ctx.eventTypes[name]) ctx.eventSource.on(ctx.eventTypes[name], callback); };
+  const cleanups = [];
+  const on = (name, callback) => {
+    if (!ctx.eventTypes[name]) return;
+    ctx.eventSource.on(ctx.eventTypes[name], callback);
+    cleanups.push(() => ctx.eventSource.removeListener(ctx.eventTypes[name], callback));
+  };
   on("MESSAGE_SENT", onMessageSent);
   on("GENERATION_AFTER_COMMANDS", onGenerationStarted);
   on("MESSAGE_RECEIVED", onMessageReceived);
@@ -247,19 +251,27 @@ export function initWorkerHooks() {
   on("CHAT_CHANGED", () => {
     cancelWorker("Cancelled: chat changed");
     generation = null;
-    publish({ status: "idle", message: "Ready", trigger: "", elapsedMs: 0, response: "" });
+    publish({ status: "idle", message: "Ready", trigger: "", elapsedMs: 0, response: "", provider: "", requestId: "" });
   });
   for (const event of ["MESSAGE_EDITED", "MESSAGE_UPDATED", "MESSAGE_DELETED"]) {
     on(event, () => cancelWorker("Cancelled: messages changed"));
   }
-  subscribeSettings((key, settings) => {
+  cleanups.push(subscribeSettings((key, settings) => {
     if (key === null || ["profileId", "model", "promptTemplate", "lastMessagesCount", "includePreset", "maxTokens", "temperature"].includes(key)) {
       cancelWorker("Cancelled: worker settings changed");
     }
     if (!settings.enabled || (!settings.autoUpdate && status.trigger !== "manual")) cancelWorker();
     if (["autoUpdate", "trigger"].includes(key) && generation) generation.handled = true;
-  });
-  subscribeState(() => {
+  }));
+  cleanups.push(subscribeState(() => {
     if (active && !active.committing) cancelWorker("Cancelled: state changed");
-  });
+  }));
+  stopHooks = () => {
+    for (const cleanup of cleanups) cleanup();
+    cancelWorker();
+    generation = null;
+    status = { status: "idle", message: "Ready", trigger: "", elapsedMs: 0, response: "", provider: "", requestId: "" };
+    stopHooks = null;
+  };
+  return stopHooks;
 }

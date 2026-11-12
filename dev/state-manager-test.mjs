@@ -17,6 +17,8 @@ const ctx = {
   saveSettingsDebounced() {}, saveMetadataDebounced() {},
   eventTypes, eventSource: { on(name, callback) {
     const list = hooks.get(name) || []; list.push(callback); hooks.set(name, list);
+  }, removeListener(name, callback) {
+    hooks.set(name, (hooks.get(name) || []).filter(listener => listener !== callback));
   } },
   setExtensionPrompt(key, value, position, depth, scan, role) { injections.set(key, { value, position, depth, scan, role }); },
   ConnectionManagerRequestService: { async sendRequest(...args) { calls.push(args); return answer(...args); } },
@@ -28,7 +30,12 @@ const state = await import("../src/state-store.js");
 const worker = await import("../src/worker.js");
 const injector = await import("../src/injector.js");
 settings.loadSettings();
-state.initStateHooks(); worker.initWorkerHooks(); injector.initInjector();
+settings.updateSetting("enabled", false);
+const { initRuntime } = await import("../src/runtime.js");
+initRuntime();
+assert.equal([...hooks.values()].flat().length, 0, "Disabled startup must not attach chat hooks");
+assert.equal(injections.size, 0, "Disabled startup must not create an injection entry");
+settings.updateSetting("enabled", true);
 async function emit(name, ...args) { for (const callback of hooks.get(name) || []) await callback(...args); }
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function configure(values) { for (const [key, value] of Object.entries(values)) settings.updateSetting(key, value); }
@@ -109,6 +116,7 @@ await test("parser: reject primitives, arrays, broken and ambiguous objects", ()
 });
 await test("manual: commit a full state, force one non-streaming response", async () => {
   await emit("GENERATION_ENDED");
+  answer = async () => ({ content: '{"location":"library"}', provider: "DeepSeek", requestId: "gen-worker-test" });
   ctx.chatMetadata[state.COUNTER_KEY] = 2;
   const result = await worker.runWorker();
   assert.equal(result.ok, true);
@@ -117,6 +125,8 @@ await test("manual: commit a full state, force one non-streaming response", asyn
   assert.equal(calls[0][3].stream, false); assert.equal(calls[0][4].n, 1);
   assert.equal(calls[0][4].use_fallback, false);
   assert.equal(ctx.chat.length, 2);
+  assert.equal(worker.getWorkerStatus().provider, "DeepSeek");
+  assert.equal(worker.getWorkerStatus().requestId, "gen-worker-test");
 });
 await test("worker: malformed model output leaves current state and history untouched", async () => {
   state.setState({ keep: true }); await emit("GENERATION_ENDED");
@@ -288,6 +298,66 @@ await test("merge toggle: separate-role placement remains unchanged when merge i
   const chat = [{ role: "assistant", content: "Reply" }, { role: "assistant", content: text }];
   await emit("CHAT_COMPLETION_PROMPT_READY", { chat }); assert.equal(chat.length, 2);
   configure({ injectMerge: true }); await emit("CHAT_COMPLETION_PROMPT_READY", { chat }); assert.equal(chat.length, 1);
+});
+
+await test("master switch: detach all hooks, preserve data and resume once", async () => {
+  state.setState({ keep: true });
+  const expectedHooks = [...hooks.values()].map(list => list.length);
+  const metadata = structuredClone(ctx.chatMetadata);
+  for (let i = 0; i < 3; i++) {
+    configure({ enabled: false });
+    assert.equal([...hooks.values()].flat().length, 0);
+    const prompt = injections.get(injector.PROMPT_KEY);
+    await emit("MESSAGE_SENT", 0);
+    await emit("GENERATION_AFTER_COMMANDS", "normal");
+    await emit("MESSAGE_RECEIVED", 1);
+    await emit("GENERATION_ENDED");
+    await emit("CHAT_CHANGED");
+    await flush();
+    assert.deepEqual(ctx.chatMetadata, metadata);
+    assert.equal(injections.get(injector.PROMPT_KEY), prompt);
+    assert.equal((await worker.runWorker()).ok, false);
+    assert.equal(calls.length, 0);
+    configure({ enabled: true });
+    assert.deepEqual([...hooks.values()].map(list => list.length), expectedHooks);
+    assert.match(injections.get(injector.PROMPT_KEY).value, /keep/);
+  }
+});
+
+await test("panel: disabled startup and late templates cannot create UI", async () => {
+  const panel = await import("../src/panel.js");
+  const releases = [];
+  let inserted = 0;
+  const holder = { insertAdjacentHTML() { inserted++; } };
+  globalThis.document = { getElementById: id => id === "top-settings-holder" ? holder : null };
+  ctx.renderExtensionTemplateAsync = () => new Promise(resolve => releases.push(resolve));
+  configure({ enabled: false });
+  await panel.initPanel();
+  assert.equal(releases.length, 0);
+  configure({ enabled: true });
+  const pending = panel.initPanel();
+  assert.equal(panel.initPanel(), pending, "Concurrent initialization is shared");
+  configure({ enabled: false }); panel.destroyPanel();
+  configure({ enabled: true });
+  const next = panel.initPanel();
+  releases[0]("old panel"); await pending;
+  assert.equal(inserted, 0, "An earlier enabled session cannot append its template");
+  configure({ enabled: false }); panel.destroyPanel();
+  releases[1]("new panel"); await next;
+  assert.equal(inserted, 0);
+  delete globalThis.document;
+});
+
+await test("master switch: reloaded settings resynchronize existing hooks", () => {
+  settings.getSettings().enabled = false;
+  initRuntime();
+  assert.equal([...hooks.values()].flat().length, 0);
+  settings.getSettings().enabled = true;
+  initRuntime();
+  const count = [...hooks.values()].flat().length;
+  assert.ok(count > 0);
+  initRuntime();
+  assert.equal([...hooks.values()].flat().length, count);
 });
 
 console.log(`\n${passed}/${passed} state manager checks passed`);

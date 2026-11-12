@@ -44,6 +44,8 @@ const listeners = new Set();
  * @property {number} historyLimit Number of previous revisions to retain.
  * @property {number} lastMessagesCount
  * @property {string} promptTemplate
+ * @property {boolean} panelPinned Keep the native drawer open beside other drawers.
+ * @property {Record<string, {api: string, preset?: string, settings: Record<string, unknown>}>} profileRouting Remembered provider routing for independent requests.
  */
 
 /** @type {Readonly<StateManagerSettings>} */
@@ -67,6 +69,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   historyLimit: 50,
   lastMessagesCount: 2,
   promptTemplate: DEFAULT_PROMPT,
+  panelPinned: false,
+  profileRouting: {},
 });
 
 export function boundedInteger(value, fallback, min, max) {
@@ -75,6 +79,7 @@ export function boundedInteger(value, fallback, min, max) {
 }
 
 function normalizeSetting(key, value) {
+  if (key === "profileRouting") return value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const ranges = {
     maxTokens: [2048, 16, 8192], frequency: [1, 1, 1000],
     injectDepth: [0, 0, 1000], historyLimit: [50, 0, 200], lastMessagesCount: [2, 1, 200],
@@ -111,7 +116,7 @@ export function loadSettings() {
 
   for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
     if (!(key in settings)) {
-      settings[key] = value;
+      settings[key] = structuredClone(value);
       changed = true;
     }
     const normalized = normalizeSetting(key, settings[key]);

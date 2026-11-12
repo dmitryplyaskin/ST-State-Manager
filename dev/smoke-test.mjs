@@ -126,7 +126,7 @@ await check("generate: profile result", async () => {
   return [result.backend, result.model, result.content, result.reasoning];
 }, ["profile", "profile-model", "profile-answer", "because"]);
 
-await check("generate: effective profile model is forwarded", () => capturedSendRequest[4], { model: "profile-model" });
+await check("generate: effective profile model is forwarded", () => capturedSendRequest[4].model, "profile-model");
 
 await check("generate: no model key when profile has no model", async () => {
   await llm.generate({
@@ -145,13 +145,13 @@ await check("generate: override payload", async () => {
     maxTokens: 128,
     temperature: 0.2,
   });
-  return [capturedSendRequest[4], result.model];
-}, [{ model: "other-model", temperature: 0.2 }, "other-model"]);
+  return [capturedSendRequest[4].model, capturedSendRequest[4].temperature, result.model];
+}, ["other-model", 0.2, "other-model"]);
 
 await check("generate: options passed to service", () => {
   const options = capturedSendRequest[3];
   return [options.stream, options.extractData, options.includePreset];
-}, [false, true, true]);
+}, [false, false, true]);
 
 // Generation through the main connection
 await check("generate: main connection", async () => {

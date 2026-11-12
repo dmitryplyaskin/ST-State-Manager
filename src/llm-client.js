@@ -15,7 +15,7 @@
  * See RESEARCH.md for the full write-up and for the source references.
  */
 
-import { getSettings } from "./settings.js";
+import { getSettings, updateSetting } from "./settings.js";
 
 const LOG_PREFIX = "[ST-State-Manager]";
 
@@ -50,6 +50,8 @@ export const CHAT_GENERATE_URL = "/api/backends/chat-completions/generate";
  * @property {string} backend "profile" or "main".
  * @property {string} profileId Profile id, "" for the main connection.
  * @property {string} model Model that was requested.
+ * @property {string} [provider] Actual provider returned by OpenRouter.
+ * @property {string} [requestId] OpenRouter generation id for the activity report.
  */
 
 function context() {
@@ -94,6 +96,77 @@ export function getProfile(profileId) {
   }
   const profiles = context().extensionSettings?.connectionManager?.profiles ?? [];
   return profiles.find((profile) => profile.id === profileId) ?? null;
+}
+
+function routingPayload(settings = {}) {
+  settings ||= {};
+  const strings = value => Array.isArray(value)
+    ? [...new Set(value.filter(item => typeof item === "string").map(item => item.trim()).filter(Boolean))] : [];
+  return {
+    provider: strings(settings.openrouter_providers),
+    allow_fallbacks: typeof settings.openrouter_allow_fallbacks === "boolean" ? settings.openrouter_allow_fallbacks : true,
+    use_fallback: Boolean(settings.openrouter_use_fallback),
+    quantizations: strings(settings.openrouter_quantizations),
+    middleout: settings.openrouter_middleout || "on",
+  };
+}
+
+/** Routing is connection configuration, independent of the sampling-preset switch. */
+export function getOpenRouterRouting(profileId = "") {
+  const ctx = context();
+  if (!profileId && ctx.mainApi !== "openai") return null;
+  const profile = profileId ? getProfile(profileId) : null;
+  if (profileId && !profile) return null;
+  if (profile && ctx.CONNECT_API_MAP?.[profile.api] && ctx.CONNECT_API_MAP[profile.api].selected !== "openai") return null;
+  const source = profileId ? ctx.CONNECT_API_MAP?.[profile.api]?.source || profile.api
+    : ctx.chatCompletionSettings?.chat_completion_source;
+  if (source !== "openrouter") return null;
+  const active = !profileId || (ctx.extensionSettings.connectionManager?.selectedProfile === profileId
+    && ctx.mainApi === "openai" && ctx.chatCompletionSettings?.chat_completion_source === "openrouter");
+  if (active) return { source: "active", ...routingPayload(ctx.chatCompletionSettings) };
+  const remembered = getSettings().profileRouting?.[profileId];
+  if (remembered && remembered.api === profile.api && remembered.preset === profile.preset) {
+    return { source: "remembered", ...routingPayload(remembered.settings) };
+  }
+  const preset = profile.preset ? ctx.getPresetManager?.("openai")?.getCompletionPresetByName(profile.preset) : null;
+  return { source: "preset", ...routingPayload(preset || {}) };
+}
+
+/** Remember the visible routing of this profile so separate requests survive a main-profile switch. */
+export function rememberActiveRouting(profileId = getSettings().profileId) {
+  if (!profileId) return;
+  const routing = getOpenRouterRouting(profileId);
+  if (routing?.source !== "active") return;
+  const profile = getProfile(profileId);
+  const entry = { api: profile.api, preset: profile.preset, settings: {
+    openrouter_providers: routing.provider, openrouter_allow_fallbacks: routing.allow_fallbacks,
+    openrouter_use_fallback: routing.use_fallback, openrouter_quantizations: routing.quantizations,
+    openrouter_middleout: routing.middleout,
+  } };
+  const previous = getSettings().profileRouting || {};
+  if (JSON.stringify(previous[profileId]) !== JSON.stringify(entry)) {
+    updateSetting("profileRouting", { ...previous, [profileId]: entry });
+  }
+}
+
+function routingOverrides(profileId) {
+  const routing = getOpenRouterRouting(profileId);
+  if (!routing) return {};
+  const { source: _source, ...payload } = routing;
+  return payload;
+}
+
+function extractOpenRouterResponse(result) {
+  if (!Array.isArray(result?.choices)) return result;
+  const message = result.choices[0]?.message || {};
+  const reasoning = message.reasoning || message.reasoning_content
+    || (Array.isArray(message.reasoning_details) ? message.reasoning_details.map(item => item.text || "").join("\n") : "");
+  return {
+    content: context().extractMessageFromData(result, "openai"),
+    reasoning: typeof reasoning === "string" ? reasoning : "",
+    provider: typeof result.provider === "string" ? result.provider : "",
+    requestId: typeof result.id === "string" ? result.id : "",
+  };
 }
 
 /**
@@ -218,7 +291,7 @@ function buildMainStatusRequest() {
  * @param {string} [profileId]
  * @returns {Promise<{ models: Array<{ id: string, name: string }>, error: string | null }>}
  */
-export async function fetchModels(profileId = "") {
+export async function fetchModels(profileId = "", { signal } = {}) {
   try {
     let request;
     if (profileId) {
@@ -236,6 +309,7 @@ export async function fetchModels(profileId = "") {
       headers: context().getRequestHeaders(),
       body: JSON.stringify(request.body),
       cache: "no-cache",
+      signal,
     });
 
     const text = await response.text();
@@ -258,6 +332,7 @@ export async function fetchModels(profileId = "") {
     const models = normalizeModels(raw);
     return { models, error: models.length ? null : "The provider returned an empty model list" };
   } catch (error) {
+    if (signal?.aborted) return { models: [], error: "Cancelled" };
     console.warn(`${LOG_PREFIX} Model list request failed`, error);
     return { models: [], error: describeError(error) };
   }
@@ -381,7 +456,8 @@ async function generateWithProfile(options) {
    * undefined keys are deleted from the payload by `createRequestData`, which
    * would remove the model entirely.
    */
-  const overrides = { ...(options.overridePayload ?? {}) };
+  const routing = getOpenRouterRouting(options.profileId);
+  const overrides = { ...routingOverrides(options.profileId), ...(options.overridePayload ?? {}) };
   const trimmedModel = String(options.resolvedModel ?? "").trim();
   if (trimmedModel) {
     overrides.model = trimmedModel;
@@ -396,14 +472,14 @@ async function generateWithProfile(options) {
     options.maxTokens,
     {
       stream: options.stream,
-      extractData: true,
+      extractData: !(routing && !options.stream),
       includePreset: options.includePreset,
       signal: options.signal ?? undefined,
     },
     overrides,
   );
 
-  return consumeResult(result, options.onToken, {
+  return consumeResult(routing && !options.stream ? extractOpenRouterResponse(result) : result, options.onToken, {
     backend: "profile",
     profileId: options.profileId,
     model: trimmedModel || String(getProfile(options.profileId)?.model ?? ""),
@@ -455,12 +531,7 @@ async function generateWithMainApi(options) {
   }
 
   if (settings.chat_completion_source === "openrouter") {
-    Object.assign(payload, {
-      use_fallback: Boolean(settings.openrouter_use_fallback),
-      provider: settings.openrouter_providers,
-      allow_fallbacks: settings.openrouter_allow_fallbacks,
-      middleout: settings.openrouter_middleout,
-    });
+    Object.assign(payload, routingOverrides(""));
   }
   Object.assign(payload, options.overridePayload || {});
   if (options.resolvedModel) payload.model = options.resolvedModel;
@@ -468,10 +539,11 @@ async function generateWithMainApi(options) {
   const data = options.includePreset && typeof service.presetToGeneratePayload === "function"
     ? await service.presetToGeneratePayload(settings, {}, payload)
     : service.createRequestData(payload);
-  const result = await service.sendRequest(data, true, options.signal);
+  const rawOpenRouter = settings.chat_completion_source === "openrouter" && !options.stream;
+  const result = await service.sendRequest(data, !rawOpenRouter, options.signal);
   const model = String(options.resolvedModel || ctx.getChatCompletionModel(settings) || "");
 
-  return consumeResult(result, options.onToken, {
+  return consumeResult(rawOpenRouter ? extractOpenRouterResponse(result) : result, options.onToken, {
     backend: "main",
     profileId: "",
     model,
@@ -511,6 +583,8 @@ async function consumeResult(result, onToken, meta) {
     ...meta,
     content: typeof result?.content === "string" ? result.content : "",
     reasoning: typeof result?.reasoning === "string" ? result.reasoning : "",
+    provider: typeof result?.provider === "string" ? result.provider : "",
+    requestId: typeof result?.requestId === "string" ? result.requestId : "",
   };
 }
 
@@ -536,17 +610,19 @@ export function describeError(error) {
  * @param {string} prompt
  * @returns {Promise<GenerateResult & { elapsedMs: number }>}
  */
-export async function runTestRequest(prompt) {
+export async function runTestRequest(prompt, { signal } = {}) {
   const settings = getSettings();
   const started = performance.now();
   const result = await generate({
     profileId: settings.profileId,
     model: settings.model,
     messages: [{ role: "user", content: prompt }],
-    maxTokens: settings.maxTokens,
+    maxTokens: Math.min(settings.maxTokens, 128),
     temperature: settings.temperature,
     includePreset: settings.includePreset,
     stream: false,
+    signal,
+    overridePayload: { n: 1, use_fallback: false, enable_web_search: false },
   });
   return { ...result, elapsedMs: Math.round(performance.now() - started) };
 }

@@ -5,7 +5,7 @@ export const STATE_KEY = "st_state_manager";
 export const COUNTER_KEY = "st_state_manager_counter";
 export const STATE_VERSION = 1;
 const listeners = new Set();
-let hooksInitialized = false;
+let stopHooks = null;
 
 export function isStateObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -114,8 +114,12 @@ export function notifyStateChanged() {
 }
 
 export function initStateHooks() {
-  if (hooksInitialized) return;
-  hooksInitialized = true;
+  if (stopHooks) return stopHooks;
   const ctx = SillyTavern.getContext();
-  ctx.eventSource.on(ctx.eventTypes.CHAT_CHANGED, () => notifyStateChanged());
+  ctx.eventSource.on(ctx.eventTypes.CHAT_CHANGED, notifyStateChanged);
+  stopHooks = () => {
+    ctx.eventSource.removeListener(ctx.eventTypes.CHAT_CHANGED, notifyStateChanged);
+    stopHooks = null;
+  };
+  return stopHooks;
 }
