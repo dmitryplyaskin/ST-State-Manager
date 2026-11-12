@@ -342,6 +342,8 @@ export async function generate(options) {
     stream,
     signal,
     onToken,
+    includePreset,
+    overridePayload,
   });
 }
 
@@ -438,6 +440,7 @@ async function generateWithMainApi(options) {
     model: options.resolvedModel,
     chat_completion_source: settings.chat_completion_source,
     max_tokens: options.maxTokens,
+    custom_prompt_post_processing: settings.custom_prompt_post_processing,
   };
 
   if (Number.isFinite(options.temperature)) {
@@ -451,7 +454,20 @@ async function generateWithMainApi(options) {
     payload.proxy_password = settings.proxy_password;
   }
 
-  const data = service.createRequestData(payload);
+  if (settings.chat_completion_source === "openrouter") {
+    Object.assign(payload, {
+      use_fallback: Boolean(settings.openrouter_use_fallback),
+      provider: settings.openrouter_providers,
+      allow_fallbacks: settings.openrouter_allow_fallbacks,
+      middleout: settings.openrouter_middleout,
+    });
+  }
+  Object.assign(payload, options.overridePayload || {});
+  if (options.resolvedModel) payload.model = options.resolvedModel;
+
+  const data = options.includePreset && typeof service.presetToGeneratePayload === "function"
+    ? await service.presetToGeneratePayload(settings, {}, payload)
+    : service.createRequestData(payload);
   const result = await service.sendRequest(data, true, options.signal);
   const model = String(options.resolvedModel || ctx.getChatCompletionModel(settings) || "");
 

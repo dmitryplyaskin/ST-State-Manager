@@ -1,186 +1,121 @@
-/**
- * ST-State-Manager — per-chat state storage.
- *
- * The state document is stored in `chat_metadata.st_state_manager`, so it is
- * saved together with the chat file and travels with exports/backups.
- *
- * Shape of the document:
- * {
- *   version: 1,
- *   revision: 0,        // incremented on every write
- *   updatedAt: 0,       // unix timestamp in ms
- *   data: {}            // the actual state; the schema is up to the feature
- * }
- *
- * This module is intentionally schema-agnostic: extraction prompts, schema
- * validation and prompt injection can be built on top of it later.
- */
-
-const LOG_PREFIX = "[ST-State-Manager]";
+/** Per-chat scene state. Public reads and writes use detached snapshots. */
+import { boundedInteger, getSettings } from "./settings.js";
 
 export const STATE_KEY = "st_state_manager";
+export const COUNTER_KEY = "st_state_manager_counter";
 export const STATE_VERSION = 1;
-
-/** @type {Set<(state: StateDocument) => void>} */
 const listeners = new Set();
+let hooksInitialized = false;
 
-/**
- * @typedef {object} StateDocument
- * @property {number} version
- * @property {number} revision
- * @property {number} updatedAt
- * @property {Record<string, unknown>} data
- */
-
-function context() {
-  return SillyTavern.getContext();
+export function isStateObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/**
- * @returns {StateDocument}
- */
-function createEmptyState() {
-  return { version: STATE_VERSION, revision: 0, updatedAt: 0, data: {} };
+function emptyState() {
+  return { version: STATE_VERSION, revision: 0, updatedAt: 0, data: {}, history: [] };
 }
 
-/**
- * @param {unknown} raw
- * @returns {StateDocument}
- */
 function normalize(raw) {
-  const state = createEmptyState();
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return state;
-  }
-  const record = /** @type {Record<string, unknown>} */ (raw);
-  state.version = Number(record.version) || STATE_VERSION;
-  state.revision = Number(record.revision) || 0;
-  state.updatedAt = Number(record.updatedAt) || 0;
-  state.data =
-    record.data && typeof record.data === "object" && !Array.isArray(record.data)
-      ? /** @type {Record<string, unknown>} */ (record.data)
-      : {};
-  return state;
+  if (!isStateObject(raw)) return emptyState();
+  const revision = boundedInteger(raw.revision, 0, 0, Number.MAX_SAFE_INTEGER);
+  return {
+    version: STATE_VERSION,
+    revision,
+    updatedAt: Number(raw.updatedAt) || 0,
+    data: isStateObject(raw.data) ? structuredClone(raw.data) : {},
+    ...(typeof raw.trigger === "string" ? { trigger: raw.trigger } : {}),
+    history: Array.isArray(raw.history) ? raw.history
+      .filter(entry => isStateObject(entry) && isStateObject(entry.data)
+        && Number.isInteger(entry.revision) && entry.revision > 0 && entry.revision < revision)
+      .map(entry => ({ revision: entry.revision, updatedAt: Number(entry.updatedAt) || 0,
+        data: structuredClone(entry.data), trigger: String(entry.trigger || "manual") })) : [],
+  };
 }
 
-/**
- * Returns the state document of the current chat.
- * @returns {StateDocument}
- */
+function activeContext() {
+  const ctx = SillyTavern.getContext();
+  if (!ctx.getCurrentChatId?.() || !ctx.chatMetadata) throw new Error("No active chat");
+  return ctx;
+}
+
 export function getState() {
-  const metadata = context().chatMetadata;
-  return normalize(metadata?.[STATE_KEY]);
+  return normalize(SillyTavern.getContext().chatMetadata?.[STATE_KEY]);
 }
 
-/**
- * Replaces (or shallow-merges) the state data of the current chat.
- * @param {Record<string, unknown>} data
- * @param {{ merge?: boolean }} [options]
- * @returns {StateDocument}
- */
-export function setState(data, { merge = false } = {}) {
-  const ctx = context();
-  if (!ctx.getCurrentChatId?.()) {
-    throw new Error("No active chat");
-  }
+/** History contains previous revisions; the current revision lives at the root. */
+export function getHistory() {
+  return getState().history;
+}
 
-  const metadata = ctx.chatMetadata;
-  const current = normalize(metadata[STATE_KEY]);
-  const nextData = merge ? { ...current.data, ...data } : data;
-
-  /** @type {StateDocument} */
+export function setState(data, { merge = false, trigger = "manual" } = {}) {
+  if (!isStateObject(data)) throw new Error("State must be a JSON object");
+  const snapshot = JSON.parse(JSON.stringify(data));
+  if (!isStateObject(snapshot)) throw new Error("State must serialize to a JSON object");
+  const ctx = activeContext();
+  const current = getState();
+  const limit = boundedInteger(getSettings().historyLimit, 50, 0, 200);
+  const history = current.history;
+  if (current.revision > 0) history.push({ revision: current.revision,
+    updatedAt: current.updatedAt, data: current.data, trigger: current.trigger || "manual" });
   const next = {
     version: STATE_VERSION,
     revision: current.revision + 1,
     updatedAt: Date.now(),
-    data: nextData && typeof nextData === "object" && !Array.isArray(nextData) ? nextData : {},
+    data: merge ? { ...current.data, ...snapshot } : snapshot,
+    trigger,
+    history: limit ? history.slice(-limit) : [],
   };
-
-  metadata[STATE_KEY] = next;
+  ctx.chatMetadata[STATE_KEY] = next;
   ctx.saveMetadataDebounced();
-  notifyStateChanged(next);
-  return next;
+  notifyStateChanged();
+  return getState();
 }
 
-/**
- * Shallow-merges a patch into the current state data.
- * @param {Record<string, unknown>} patch
- * @returns {StateDocument}
- */
 export function updateState(patch) {
   return setState(patch, { merge: true });
 }
 
-/**
- * Removes the state document from the current chat.
- * @returns {StateDocument}
- */
-export function resetState() {
-  const ctx = context();
-  const metadata = ctx.chatMetadata;
-  if (metadata && Object.hasOwn(metadata, STATE_KEY)) {
-    delete metadata[STATE_KEY];
-    ctx.saveMetadataDebounced();
-  }
-  const state = createEmptyState();
-  notifyStateChanged(state);
-  return state;
+export function rollbackTo(revision) {
+  const entry = getHistory().find(item => item.revision === Number(revision));
+  if (!entry) throw new Error("This revision is no longer in the history");
+  return setState(entry.data, { trigger: "rollback" });
 }
 
-/**
- * @returns {string} Pretty-printed state JSON.
- */
+export function resetState() {
+  const ctx = activeContext();
+  delete ctx.chatMetadata[STATE_KEY];
+  delete ctx.chatMetadata[COUNTER_KEY];
+  ctx.saveMetadataDebounced();
+  notifyStateChanged();
+  return getState();
+}
+
 export function exportState() {
   return JSON.stringify(getState(), null, 2);
 }
 
-/**
- * Replaces the state from a JSON document produced by `exportState()`.
- * @param {string | Record<string, unknown>} json
- * @returns {StateDocument}
- */
 export function importState(json) {
   const parsed = typeof json === "string" ? JSON.parse(json) : json;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Invalid state document");
-  }
-  const record = /** @type {Record<string, unknown>} */ (parsed);
-  const data =
-    record.data && typeof record.data === "object" ? record.data : record;
-  return setState(/** @type {Record<string, unknown>} */ (data));
+  if (!isStateObject(parsed)) throw new Error("Invalid state document");
+  return setState(Object.hasOwn(parsed, "version") && Object.hasOwn(parsed, "data")
+    ? parsed.data : parsed, { trigger: "import" });
 }
 
-/**
- * Subscribes to state changes.
- * @param {(state: StateDocument) => void} listener
- * @returns {() => void} Unsubscribe function.
- */
 export function subscribeState(listener) {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
 
-/**
- * Notifies subscribers about a state change.
- * @param {StateDocument} [state] State to broadcast; read from the chat when omitted.
- */
-export function notifyStateChanged(state) {
-  const value = state ?? getState();
+export function notifyStateChanged() {
   for (const listener of listeners) {
-    try {
-      listener(value);
-    } catch (error) {
-      console.error(`${LOG_PREFIX} State listener failed`, error);
-    }
+    try { listener(getState()); }
+    catch (error) { console.error("[ST-State-Manager] State listener failed", error); }
   }
 }
 
-/**
- * Registers extension event hooks. Called once from `index.js`.
- */
 export function initStateHooks() {
-  const ctx = context();
-  ctx.eventSource.on(ctx.eventTypes.CHAT_CHANGED, () => {
-    notifyStateChanged();
-  });
+  if (hooksInitialized) return;
+  hooksInitialized = true;
+  const ctx = SillyTavern.getContext();
+  ctx.eventSource.on(ctx.eventTypes.CHAT_CHANGED, () => notifyStateChanged());
 }

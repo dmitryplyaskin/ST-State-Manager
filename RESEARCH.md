@@ -604,3 +604,7 @@ const ids = data.map((model) => model.id);
 const context = SillyTavern.getContext();
 const text = await context.generateQuietPrompt({ quietPrompt: prompt });
 ```
+
+### Implementation note (0.2.0)
+
+The sections above record the original connection-layer research. The current extension also implements extraction, event scheduling, history, rollback and prompt injection; see README.md and src/worker.js. Adjacent-role merging requires CHAT_COMPLETION_PROMPT_READY: SillyTavern groups extension prompts at a shared depth/role, but does not itself guarantee a merge with the neighboring chat message. Streaming can emit GENERATION_ENDED before MESSAGE_RECEIVED. A new swipe emits MESSAGE_SWIPED before generation and has no stored swipes[swipe_id] yet. The implementation handles both event orders and waits for generated swipe text.

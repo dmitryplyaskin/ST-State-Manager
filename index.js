@@ -14,6 +14,8 @@
 import { loadSettings } from "./src/settings.js";
 import { initStateHooks } from "./src/state-store.js";
 import { initSettingsUI } from "./src/ui.js";
+import { initWorkerHooks } from "./src/worker.js";
+import { initInjector } from "./src/injector.js";
 
 const LOG_PREFIX = "[ST-State-Manager]";
 
@@ -32,6 +34,8 @@ function init() {
 
   loadSettings();
   initStateHooks();
+  initWorkerHooks();
+  initInjector();
 
   // The extensions panel is built after the app is ready; the settings panel
   // template can only be appended once its container exists.

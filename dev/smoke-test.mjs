@@ -12,6 +12,7 @@
 let savedSettings = 0;
 let savedMetadata = 0;
 let capturedSendRequest = null;
+let capturedMainPayload = null;
 const fetchedRequests = [];
 
 const profiles = [
@@ -56,7 +57,7 @@ const store = {
   },
   ChatCompletionService: {
     createRequestData: (payload) => Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined)),
-    sendRequest: async () => ({ content: "main-answer", reasoning: "" }),
+    sendRequest: async (payload) => { capturedMainPayload = payload; return { content: "main-answer", reasoning: "" }; },
   },
   eventSource: { on: () => {} },
   eventTypes: { CHAT_CHANGED: "chat_changed" },
@@ -100,7 +101,7 @@ const { getState, setState, updateState, resetState, exportState } = state;
 await check("settings: defaults created", () => {
   const s = settingsMod.loadSettings();
   return [s.enabled, s.profileId, s.model, s.maxTokens, s.temperature, s.includePreset, s.stream];
-}, [true, "", "", 512, null, true, false]);
+}, [true, "", "", 2048, null, true, false]);
 
 await check("settings: defaults persisted once", () => savedSettings, 1);
 
@@ -176,6 +177,21 @@ await check("generate: main rejects non-chat API", async () => {
 }, "threw");
 
 // Model list
+await check("generate: main preserves provider restrictions and worker overrides", async () => {
+  store.chatCompletionSettings.openrouter_providers = ["DeepSeek"];
+  store.chatCompletionSettings.openrouter_allow_fallbacks = false;
+  store.chatCompletionSettings.openrouter_use_fallback = true;
+  await llm.generate({ messages: [{ role: "user", content: "hi" }], overridePayload: { use_fallback: false, n: 1 } });
+  return [capturedMainPayload.provider, capturedMainPayload.allow_fallbacks, capturedMainPayload.use_fallback, capturedMainPayload.n];
+}, [["DeepSeek"], false, false, 1]);
+
+await check("generate: main preset is applied before the token/model overrides", async () => {
+  store.ChatCompletionService.presetToGeneratePayload = async (_settings, _preset, payload) => ({ temperature: 0.7, ...payload });
+  await llm.generate({ messages: [{ role: "user", content: "hi" }], model: "worker-model", maxTokens: 64 });
+  delete store.ChatCompletionService.presetToGeneratePayload;
+  return [capturedMainPayload.temperature, capturedMainPayload.model, capturedMainPayload.max_tokens];
+}, [0.7, "worker-model", 64]);
+
 await check("models: profile list normalized", async () => {
   const { models, error } = await llm.fetchModels("p1");
   return [models.map((m) => m.id), error];
@@ -211,7 +227,7 @@ await check("errors: cause is appended", () => {
 await check("errors: plain error", () => llm.describeError(new Error("boom")), "boom");
 
 // State store
-await check("state: empty by default", () => getState(), { version: 1, revision: 0, updatedAt: 0, data: {} });
+await check("state: empty by default", () => getState(), { version: 1, revision: 0, updatedAt: 0, data: {}, history: [] });
 
 await check("state: set bumps revision", () => {
   const s = setState({ location: "tavern" });
@@ -234,7 +250,7 @@ await check("state: export/import roundtrip", () => {
 await check("state: reset clears", () => {
   resetState();
   return getState();
-}, { version: 1, revision: 0, updatedAt: 0, data: {} });
+}, { version: 1, revision: 0, updatedAt: 0, data: {}, history: [] });
 
 // Report
 let failed = 0;

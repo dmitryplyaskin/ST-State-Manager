@@ -89,10 +89,66 @@
           <span>Apply the profile's generation preset</span>
         </label>
 
-        <label class="checkbox_label" for="stsm_stream">
-          <input id="stsm_stream" type="checkbox" />
-          <span>Stream responses</span>
+        <small class="text_muted">State updates use a separate, non-streaming request and do not add chat messages.</small>
+
+        <hr class="sysHR" />
+        <div class="stsm-section-title">Automatic updates</div>
+        <label class="checkbox_label" for="stsm_autoUpdate">
+          <input id="stsm_autoUpdate" data-stsm-setting="autoUpdate" type="checkbox" />
+          <span>Update scene state automatically</span>
         </label>
+        <small class="text_muted">Off by default. When enabled, automatic updates and swipe updates make paid requests using the connection above.</small>
+        <label for="stsm_trigger">When to update</label>
+        <select id="stsm_trigger" data-stsm-setting="trigger" class="text_pole">
+          <option value="after">After the chat response finishes</option>
+          <option value="before">Before the chat response (wait for the state update)</option>
+        </select>
+        <div class="stsm-grid">
+          <label for="stsm_frequency">Every N user messages
+            <input id="stsm_frequency" data-stsm-setting="frequency" class="text_pole" type="number" min="1" max="1000" step="1" />
+          </label>
+          <label for="stsm_lastMessagesCount">Recent messages to read
+            <input id="stsm_lastMessagesCount" data-stsm-setting="lastMessagesCount" class="text_pole" type="number" min="1" max="200" step="1" />
+          </label>
+        </div>
+        <label class="checkbox_label" for="stsm_regenOnSwipe">
+          <input id="stsm_regenOnSwipe" data-stsm-setting="regenOnSwipe" type="checkbox" />
+          <span>Update on swipes and regenerated replies</span>
+        </label>
+        <small class="text_muted">Swipes do not advance the user-message counter. A new swipe is read after it finishes; an existing swipe is read when selected.</small>
+
+        <hr class="sysHR" />
+        <div class="stsm-section-title">State in the main prompt</div>
+        <label class="checkbox_label" for="stsm_injectEnabled">
+          <input id="stsm_injectEnabled" data-stsm-setting="injectEnabled" type="checkbox" />
+          <span>Include the current state in the main model's context</span>
+        </label>
+        <label for="stsm_injectPosition">Position</label>
+        <select id="stsm_injectPosition" data-stsm-setting="injectPosition" class="text_pole">
+          <option value="1">In chat history</option><option value="0">After the story string</option><option value="2">Before the story string</option>
+        </select>
+        <div class="stsm-grid">
+          <label for="stsm_injectRole">Role (chat history)
+            <select id="stsm_injectRole" data-stsm-setting="injectRole" class="text_pole"><option value="system">System</option><option value="user">User</option><option value="assistant">Assistant</option></select>
+          </label>
+          <label for="stsm_injectDepth">Depth from the end
+            <input id="stsm_injectDepth" data-stsm-setting="injectDepth" class="text_pole" type="number" min="0" max="1000" step="1" />
+          </label>
+        </div>
+        <label class="checkbox_label" for="stsm_injectMerge">
+          <input id="stsm_injectMerge" data-stsm-setting="injectMerge" type="checkbox" />
+          <span>Merge with an adjacent message of the same user/assistant role</span>
+        </label>
+        <small class="text_muted">Depth 0 is the end of the context. Merging applies to chat completion; the provider's own prompt processing may also merge messages.</small>
+
+        <hr class="sysHR" />
+        <div class="stsm-section-title">Worker prompt &amp; history</div>
+        <label for="stsm_promptTemplate">State extraction prompt</label>
+        <textarea id="stsm_promptTemplate" data-stsm-setting="promptTemplate" class="text_pole stsm-prompt-editor" rows="10" spellcheck="false"></textarea>
+        <small class="text_muted">Variables: {{state}}, {{last_messages}}, {{history}}, {{chat_name}}, {{char_name}}. Return a full JSON object; invalid responses leave the state unchanged.</small>
+        <button id="stsm_restore_prompt" class="menu_button" type="button">Restore default prompt</button>
+        <label for="stsm_historyLimit">Previous revisions to keep (0 disables history)</label>
+        <input id="stsm_historyLimit" data-stsm-setting="historyLimit" class="text_pole" type="number" min="0" max="200" step="1" />
 
         <hr class="sysHR" />
 
@@ -121,7 +177,10 @@
           <button id="stsm_state_reset" class="menu_button" type="button">
             <i class="fa-solid fa-rotate-left"></i> Reset chat state
           </button>
+          <button id="stsm_manual_update" class="menu_button" type="button">Update state now</button>
         </div>
+        <small id="stsm_worker_status" role="status" class="text_muted"></small>
+        <small class="text_muted">Open the database icon in the top bar to browse revisions and restore previous states. Commands: /state_update and /state_show.</small>
       </div>
     </div>
   </div>

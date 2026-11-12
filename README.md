@@ -1,260 +1,105 @@
 # ST-State-Manager
 
-A SillyTavern extension scaffold for managing the **state of a roleplay chat**
-(facts, flags, character stats, world variables) with the help of a **separate
-model call** that can use its own connection profile and its own model.
+A SillyTavern extension that tracks the state of a roleplay scene using an independent model request and supplies that state to the main model.
 
-> **Status: 0.1.0 — scaffold.** The extension already loads, renders settings,
-> lists connection profiles and models, sends a test request and stores a
-> per-chat state document. The state extraction prompt and prompt injection are
-> the next step (see [Roadmap](#roadmap)).
-
-- [English](#english)
-- [Русский](#russian)
-
----
-
-<a id="english"></a>
+**Version 0.2.0.** Plain browser ES modules; no build step. Developed against SillyTavern 1.19.0.
 
 ## English
 
-### What it is
+### Getting started
 
-ST-State-Manager is meant to keep a structured snapshot of the current scene
-next to the chat: who is where, what changed, which flags are set. The snapshot
-lives in the chat metadata, is updated by a model call that is **independent
-from the main generation**, and can later be injected back into the prompt.
+1. Install this folder as `data/default-user/extensions/ST-State-Manager/`, or install from `https://github.com/dmitryplyaskin/ST-State-Manager` through Extensions. Keep the folder name `ST-State-Manager`.
+2. Reload SillyTavern. Open **Extensions → ST-State-Manager**.
+3. Select a Connection Manager profile and check the effective model. A model override is optional. The extension uses SillyTavern's existing credentials; it does not store API keys.
+4. Open a chat and click **Update state now**. The database icon in the top bar opens the current state, worker status, revision history and restore controls.
+5. Enable **Update scene state automatically** when ready. Automatic updates are off by default to avoid unexpected paid requests.
 
-The extension is intentionally split into small modules, so the state logic can
-grow without touching the UI or the request layer.
+### State updates
 
-### What works now
+The worker reads the configured number of recent non-system chat messages, the current state and the retained revision history. It sends a separate, non-streaming request. It never creates a roleplay message or starts the main generation.
 
-- Extension loads and registers its event hooks.
-- Settings panel in **Extensions → ST-State-Manager**.
-- **Connection profile selector** (Connection Manager profiles that support chat
-  or text completion).
-- **Model override** per request: pick a model from the fetched list or type any
-  model id. An empty field keeps the profile/current model.
-- Model list is loaded from the provider through SillyTavern's `/status`
-  endpoint; when a provider cannot list models, the field stays free-form.
-- **Test request** button — sends one message with the selected profile and
-  model, shows the effective backend, model, latency and the answer.
-- Per-chat state document in `chat_metadata.st_state_manager` with revision
-  counter, JSON preview and reset button.
+- **After:** update after the main model's response finishes.
+- **Before:** update after sending the user message; the main generation waits for the worker to finish or fail.
+- **Frequency:** count new user messages. Assistant messages and swipes do not advance this counter. The counter is stored per chat and is consumed when an automatic request starts.
+- **Swipes:** when automatic updates and the swipe option are enabled, selecting an existing swipe updates immediately. A new swipe or regenerated reply is read after generation finishes, independently of frequency.
+- **Manual:** use the drawer button, the chat menu's **Update scene state**, or `/state_update`. Manual requests do not change the frequency counter. `/state_show` opens a JSON viewer and returns the state JSON to slash pipelines.
 
-### Requirements
+The prompt template supports `{{state}}`, `{{last_messages}}`, `{{history}}` (newest first), `{{chat_name}}` and `{{char_name}}`. The response must contain one full JSON object. Fenced JSON and a single object surrounded by commentary are accepted. Arrays, primitives, invalid or incomplete JSON leave the existing state untouched. An error panel can show the model's last response. Max tokens defaults to 2048 for new installations; existing limits are preserved. If output is truncated, increase Max tokens or simplify the prompt; reasoning models may need a larger limit than 512.
 
-- SillyTavern **1.19.x** (developed and verified against `1.19.0`).
-- The built-in **Connection Manager** extension is recommended. Without it only
-  the main SillyTavern connection (chat completion APIs) is available.
-- The chat completion or text completion API must be configured in SillyTavern
-  itself — the extension never stores API keys.
+There are no automatic retries. Concurrent triggers are skipped. Requests can be cancelled from the drawer and time out after 120 seconds. Switching chats, editing messages, changing swipes, resetting/restoring state, or disabling the extension invalidates an in-flight result. Starting a new main generation also cancels an older worker. Manual updates during a main response are skipped.
 
-### Installation
+### Prompt injection and history
 
-Copy the folder into the user's extensions directory:
+The extension maintains one `setExtensionPrompt` entry. Choose before/after the story string or in chat history. Role and depth apply to in-chat placement; depth 0 is the end of the context. The current state is synchronized on writes, chat changes and injection-setting changes; reset/disable removes it from the prompt.
 
-```
-data/default-user/extensions/ST-State-Manager/
-```
+For chat completion, user/assistant state blocks can be merged into an adjacent message of the same role without altering chat messages, tool calls, or other extensions' blocks. The API's own prompt processing can still merge messages even if this option is off. Text completion uses SillyTavern's normal injection formatting.
 
-or install it through **Extensions → Install extension** with the repository URL:
+State lives in `chat_metadata.st_state_manager`:
 
-```
-https://github.com/dmitryplyaskin/ST-State-Manager
+```json
+{
+  "version": 1,
+  "revision": 1,
+  "updatedAt": 0,
+  "data": {},
+  "trigger": "manual",
+  "history": []
+}
 ```
 
-> The folder name **must stay `ST-State-Manager`**: the settings template is
-> loaded as `third-party/ST-State-Manager/settings.html`.
+`history` holds **previous** revisions, not a duplicate of the current revision. The default retention is 50 (0 disables retention); the limit applies on the next write. Restoring a snapshot creates a new revision and preserves the former current state in history. Old documents without history remain readable. The frequency counter is `chat_metadata.st_state_manager_counter`. State and history travel with the chat file. Reset removes state, history and the counter after confirmation.
 
-Reload the page and open **Extensions → ST-State-Manager**.
+### Connections
 
-### Settings
-
-| Setting | Meaning |
-| --- | --- |
-| Enable extension | Master switch; when off no model calls are made. |
-| Connection profile | Profile used for the call. `Main SillyTavern connection` = the current chat completion connection. |
-| Model override | Model id for this extension's calls. Empty = the profile's / current model. |
-| Max tokens | Upper bound for one call (16–8192). |
-| Temperature | Sampling temperature; empty = keep the profile preset value. |
-| Apply the profile's generation preset | When on, the profile's chat completion preset is applied before the overrides. |
-| Stream responses | Reserved for streaming consumers; the test request is always non-streaming. |
-| Test request | Sends one message and prints backend, model, latency and content. |
-| Current chat state | JSON preview of `chat_metadata.st_state_manager`. |
-
-### Architecture
-
-```
-ST-State-Manager/
-├── manifest.json          # extension manifest (display name, load order, entry points)
-├── index.js               # entry point: settings, hooks, panel initialization
-├── settings.html          # settings panel template
-├── style.css              # panel styles
-├── RESEARCH.md            # how custom model calls and model selection work in ST
-├── dev/
-│   └── smoke-test.mjs     # Node smoke test for the request/state logic
-└── src/
-    ├── settings.js        # defaults + extension_settings persistence
-    ├── llm-client.js      # profile/model resolution, model list, generation
-    ├── state-store.js     # per-chat state document (chat_metadata)
-    └── ui.js              # settings panel wiring
-```
-
-`RESEARCH.md` documents how custom model calls and model selection work in
-SillyTavern 1.19, with references to the exact source files.
+Connection Manager profiles support chat completion and text completion. Without a profile, only the current chat completion connection is supported. Profile model overrides apply to one request and do not change the profile. A missing profile causes an error and is never silently replaced with the main connection. Model listing is best-effort; free-form model IDs remain available. Worker calls request one completion and disable model fallback.
 
 ### Development
 
-No build step is required: the extension is plain ES modules loaded by
-SillyTavern. To check the request/state logic without starting SillyTavern:
-
-```bash
+```sh
 node dev/smoke-test.mjs
+node dev/state-manager-test.mjs
 ```
 
-The smoke test runs against a stubbed `SillyTavern` context and covers settings
-defaults, model resolution, `overridePayload` construction (including the
-"no `model: undefined`" rule), model list request bodies, error formatting and
-the state document lifecycle.
+The first suite checks connection/model resolution, request payloads, settings and basic state storage. The second uses an async event-emitter stub to check extraction, parsing, history, frequency, streaming/non-streaming event order, swipes, cancellation, stale-result rejection and prompt injection/merging. No test makes a network request.
 
-### Roadmap
+Manual verification: choose a low-cost test profile; update state; send a turn in after mode; send another in before mode; select/generate a swipe; browse and restore a revision; try `/state_show` and `/state_update`; reload and verify metadata persistence. Inspect the main prompt to verify injection. Do not assume a stubbed test proves provider compatibility.
 
-1. State schema and validation (JSON Schema or a hand-written validator).
-2. Extraction prompt: chat tail → model call → validated patch → `updateState()`.
-3. Optional automatic update on `MESSAGE_RECEIVED` / `GENERATION_ENDED`.
-4. Prompt injection of the current state (`setExtensionPrompt`).
-5. Manual editor for the state JSON and per-chat presets.
-
-### License
-
-MIT — see [LICENSE](LICENSE).
-
-### Author
-
-Dmitry Plyaskin
-
----
-
-<a id="russian"></a>
+```text
+index.js                 initialization and lifecycle hooks
+settings.html, style.css settings template and styles
+src/settings.js          defaults, normalization and subscriptions
+src/llm-client.js        profiles, model listing and independent requests
+src/state-store.js       per-chat snapshots, history and rollback
+src/worker.js            extraction, cancellation and event scheduling
+src/injector.js          extension prompt and same-role merging
+src/panel.js             chat drawer, history, menu and slash commands
+src/ui.js                extension settings wiring
+RESEARCH.md              installed SillyTavern API research
+```
 
 ## Русский
 
-### Что это
+Расширение ведёт JSON-состояние ролевой сцены: расположение персонажей, одежду, предметы и установленные факты. Отдельная модель обновляет состояние по сообщениям чата; результат подставляется в контекст основной модели.
 
-ST-State-Manager — расширение для SillyTavern, которое ведёт **состояние
-ролевого чата** (факты, флаги, характеристики персонажей, переменные мира) и
-обновляет его **отдельным вызовом модели**, независимым от основной генерации.
-Вызов может идти через собственный профиль подключения и собственную модель.
+### Начало работы
 
-> **Статус: 0.1.0 — каркас.** Расширение уже загружается, рисует настройки,
-> получает список профилей и моделей, отправляет тестовый запрос и хранит
-> документ состояния для каждого чата. Промпт извлечения состояния и вставка
-> состояния в промпт — следующие шаги (см. [План](#план)).
+1. Перезагрузите Таверну и откройте **Extensions → ST-State-Manager**.
+2. Выберите профиль подключения и проверьте **Effective model**. Модель можно переопределить для расширения, не изменяя основной профиль.
+3. В открытом чате нажмите **Update state now**. Иконка базы данных сверху открывает состояние, статус запроса, историю и откат.
+4. Для автоматической работы включите **Update scene state automatically**. По умолчанию этот переключатель выключен, чтобы расширение не отправляло платные запросы без настройки.
 
-### Что уже работает
+### Поведение
 
-- Загрузка расширения и регистрация обработчиков событий.
-- Панель настроек в **Extensions → ST-State-Manager**.
-- **Выбор профиля подключения** (профили Connection Manager, поддерживающие
-  chat completion или text completion).
-- **Переопределение модели** для запроса: выбрать из загруженного списка или
-  вписать любой id. Пустое поле — модель профиля/текущая модель.
-- Список моделей запрашивается у провайдера через endpoint `/status`; если
-  провайдер не умеет отдавать список, поле остаётся свободным для ввода.
-- Кнопка **Test request** — отправляет одно сообщение с выбранными профилем и
-  моделью и показывает backend, модель, задержку и ответ.
-- Документ состояния в `chat_metadata.st_state_manager` со счётчиком ревизий,
-  JSON-превью и кнопкой сброса.
+- Режим **After** обновляет состояние после ответа основной модели. Режим **Before** ждёт воркер до основного запроса.
+- Частота считается по новым сообщениям пользователя. Свайпы и сообщения ассистента счётчик не меняют; ручное обновление его тоже не сбрасывает.
+- При включённой автоматике и обработке свайпов новый вариант читается после окончания генерации, существующий — после выбора. Частота к свайпам не применяется.
+- Промпт редактируется; доступны `{{state}}`, `{{last_messages}}`, `{{history}}`, `{{chat_name}}`, `{{char_name}}`.
+- Модель должна вернуть полный JSON-объект состояния. Ошибка формата, обрезанный ответ или ошибка API не заменяют прежнее состояние. При ошибке можно посмотреть ответ модели. Если JSON обрезается, увеличьте **Max tokens**; рассуждающим моделям может не хватить 512 токенов.
+- Параллельные обновления пропускаются, автоматических повторов нет. Есть отмена и тайм-аут 120 секунд. Смена чата, изменения сообщений/свайпов, сброс, откат и отключение расширения защищены от запоздалого ответа воркера.
+- Настраиваются позиция вставки состояния, роль, глубина и склейка с соседней репликой той же роли. Склейка расширения работает для chat completion; дополнительная обработка провайдера может склеить сообщения независимо от этого переключателя.
+- История хранит предыдущие ревизии, по умолчанию до 50; лимит применяется при записи. Откат создаёт новую ревизию. Состояние, история и счётчик сохраняются вместе с чатом.
+- Ручной запуск доступен из панели, меню чата и `/state_update`. `/state_show` показывает состояние.
 
-### Требования
+Проверки без запросов к API: `node dev/smoke-test.mjs` и `node dev/state-manager-test.mjs`.
 
-- SillyTavern **1.19.x** (проверено на `1.19.0`).
-- Желательно включённое встроенное расширение **Connection Manager**. Без него
-  доступно только основное подключение SillyTavern (chat completion).
-- API должно быть настроено в самом SillyTavern — расширение не хранит ключи.
-
-### Установка
-
-Скопируйте папку в каталог расширений пользователя:
-
-```
-data/default-user/extensions/ST-State-Manager/
-```
-
-или установите через **Extensions → Install extension** по URL репозитория:
-
-```
-https://github.com/dmitryplyaskin/ST-State-Manager
-```
-
-> Имя папки **должно остаться `ST-State-Manager`**: шаблон настроек грузится как
-> `third-party/ST-State-Manager/settings.html`.
-
-Перезагрузите страницу и откройте **Extensions → ST-State-Manager**.
-
-### Настройки
-
-| Настройка | Значение |
-| --- | --- |
-| Enable extension | Главный переключатель; когда выключен, запросы к модели не выполняются. |
-| Connection profile | Профиль для запроса. `Main SillyTavern connection` — текущее chat completion подключение. |
-| Model override | Id модели для запросов расширения. Пусто — модель профиля/текущая. |
-| Max tokens | Ограничение на один запрос (16–8192). |
-| Temperature | Температура; пусто — значение из пресета профиля. |
-| Apply the profile's generation preset | Применять пресет чата профиля перед переопределениями. |
-| Stream responses | Зарезервировано для потоковых потребителей; тестовый запрос всегда без стрима. |
-| Test request | Один запрос: backend, модель, задержка, ответ. |
-| Current chat state | JSON-превью `chat_metadata.st_state_manager`. |
-
-### Архитектура
-
-```
-ST-State-Manager/
-├── manifest.json          # манифест расширения
-├── index.js               # точка входа: настройки, хуки, панель
-├── settings.html          # шаблон панели настроек
-├── style.css              # стили панели
-├── RESEARCH.md            # как устроены кастомные вызовы и выбор модели
-├── dev/
-│   └── smoke-test.mjs     # смоук-тест логики запросов и состояния
-└── src/
-    ├── settings.js        # значения по умолчанию и хранение в extension_settings
-    ├── llm-client.js      # профили, модели, вызов модели
-    ├── state-store.js     # документ состояния в chat_metadata
-    └── ui.js              # связывание панели настроек
-```
-
-В `RESEARCH.md` разобрано, как в SillyTavern 1.19 устроены кастомные вызовы
-модели и выбор модели, со ссылками на конкретные файлы исходников.
-
-### Разработка
-
-Сборка не нужна: расширение — это обычные ES-модули, которые загружает
-SillyTavern. Проверить логику запросов и состояния без запуска SillyTavern:
-
-```bash
-node dev/smoke-test.mjs
-```
-
-Смоук-тест работает на заглушке контекста `SillyTavern` и проверяет значения по
-умолчанию, резолв модели, сборку `overridePayload` (включая правило «никакого
-`model: undefined`»), тела запросов за списком моделей, форматирование ошибок и
-жизненный цикл документа состояния.
-
-### План
-
-1. Схема состояния и валидация (JSON Schema или ручной валидатор).
-2. Промпт извлечения: хвост чата → вызов модели → проверенный патч → `updateState()`.
-3. Опциональное автообновление на `MESSAGE_RECEIVED` / `GENERATION_ENDED`.
-4. Вставка состояния в промпт (`setExtensionPrompt`).
-5. Ручной редактор JSON состояния и пресеты для чата.
-
-### Лицензия
-
-MIT — см. [LICENSE](LICENSE).
-
-### Автор
-
-Dmitry Plyaskin
+MIT. Author: Dmitry Plyaskin.

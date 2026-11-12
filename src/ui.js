@@ -6,7 +6,9 @@
  * chat state store.
  */
 
-import { getSettings, isEnabled, loadSettings, updateSetting } from "./settings.js";
+import { DEFAULT_PROMPT, DEFAULT_SETTINGS, getSettings, isEnabled, loadSettings, updateSetting } from "./settings.js";
+import { confirmReset, initPanel, runManualUpdate } from "./panel.js";
+import { getWorkerStatus, subscribeWorker } from "./worker.js";
 import {
   describeError,
   fetchModels,
@@ -17,7 +19,7 @@ import {
   resolveModel,
   runTestRequest,
 } from "./llm-client.js";
-import { getState, resetState, subscribeState } from "./state-store.js";
+import { getState, subscribeState } from "./state-store.js";
 
 const LOG_PREFIX = "[ST-State-Manager]";
 const TEMPLATE_EXTENSION = "third-party/ST-State-Manager";
@@ -112,6 +114,7 @@ function markReady() {
   settings = loadSettings();
   bindSettings();
   renderAll();
+  initPanel();
 }
 
 /**
@@ -170,26 +173,30 @@ function bindSettings() {
     updateSetting("includePreset", Boolean($(this).prop("checked")));
   });
 
-  $("#stsm_stream").on("change", function () {
-    updateSetting("stream", Boolean($(this).prop("checked")));
+  $("#stsm_settings [data-stsm-setting]").on("change", function () {
+    const key = this.dataset.stsmSetting;
+    const value = this.type === "checkbox" ? this.checked : this.type === "number" ? Number(this.value) : this.value;
+    const saved = updateSetting(key, value);
+    if (this.type !== "checkbox") this.value = String(saved);
+    applyEnabledState();
+  });
+  $("#stsm_promptTemplate").on("input", function () { updateSetting("promptTemplate", this.value); });
+  $("#stsm_restore_prompt").on("click", () => {
+    updateSetting("promptTemplate", DEFAULT_PROMPT);
+    $("#stsm_promptTemplate").val(DEFAULT_PROMPT);
+  });
+  $("#stsm_manual_update").on("click", () => void runManualUpdate());
+  subscribeWorker(() => {
+    const worker = getWorkerStatus();
+    $("#stsm_worker_status").text(worker.message);
+    $("#stsm_manual_update").prop("disabled", !isEnabled() || worker.status === "running");
   });
 
   $("#stsm_test_run").on("click", () => {
     void runTest();
   });
 
-  $("#stsm_state_reset").on("click", async () => {
-    const ctx = context();
-    const confirmed = await ctx.callGenericPopup(
-      "Reset the state of the current chat? This cannot be undone.",
-      ctx.POPUP_TYPE.CONFIRM,
-    );
-    if (!confirmed) {
-      return;
-    }
-    resetState();
-    toastr.info("Chat state reset", "ST-State-Manager");
-  });
+  $("#stsm_state_reset").on("click", () => void confirmReset());
 
   subscribeState(() => renderChatState());
 }
@@ -209,14 +216,19 @@ function renderAll() {
 function renderStatic() {
   $("#stsm_enabled").prop("checked", settings.enabled !== false);
   $("#stsm_model").val(String(settings.model ?? ""));
-  $("#stsm_max_tokens").val(Number(settings.maxTokens) || 512);
+  $("#stsm_max_tokens").val(Number(settings.maxTokens) || DEFAULT_SETTINGS.maxTokens);
   $("#stsm_temperature").val(
     settings.temperature === null || settings.temperature === undefined
       ? ""
       : String(settings.temperature),
   );
   $("#stsm_include_preset").prop("checked", settings.includePreset !== false);
-  $("#stsm_stream").prop("checked", Boolean(settings.stream));
+  for (const input of document.querySelectorAll("#stsm_settings [data-stsm-setting]")) {
+    const value = settings[input.dataset.stsmSetting];
+    if (input.type === "checkbox") input.checked = Boolean(value);
+    else input.value = String(value ?? "");
+  }
+  $("#stsm_worker_status").text(getWorkerStatus().message);
 }
 
 function renderProfiles() {
@@ -240,10 +252,10 @@ function renderProfiles() {
   }
 
   if (current && !profiles.some((profile) => profile.id === current)) {
-    // The profile was deleted while it was selected.
-    updateSetting("profileId", "");
-    settings.profileId = "";
-    $select.val("");
+    // Keep a missing profile selected: never silently switch paid background
+    // requests to the main connection when a profile disappears.
+    $select.append(new Option(`Unavailable profile: ${current}`, current));
+    $select.val(current);
   } else {
     $select.val(current);
   }
@@ -375,6 +387,9 @@ function applyEnabledState() {
   if (enabled && !isConnectionManagerAvailable()) {
     $("#stsm_profile").prop("disabled", true);
   }
+  $("#stsm_manual_update").prop("disabled", !enabled || getWorkerStatus().status === "running");
+  $("#stsm_injectRole, #stsm_injectDepth").prop("disabled", !enabled || Number(settings.injectPosition) !== 1);
+  $("#stsm_injectMerge").prop("disabled", !enabled || Number(settings.injectPosition) !== 1 || settings.injectRole === "system");
 }
 
 /**
@@ -426,7 +441,7 @@ async function runTest() {
  */
 function clampTokens(value) {
   if (!Number.isFinite(value) || value <= 0) {
-    return 512;
+    return DEFAULT_SETTINGS.maxTokens;
   }
   return Math.min(Math.max(Math.floor(value), MIN_TOKENS), MAX_TOKENS);
 }
